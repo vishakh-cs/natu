@@ -1,24 +1,15 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-type Sequence = {
-  folder: string;
-  count: number;
-  files: string[];
-};
-
-type ApiResponse = {
-  sequences: Sequence[];
-  totalFrames?: number;
-};
-
+/* ─────────────────────────────────────────────────────────── types */
+type Sequence = { folder: string; count: number; files: string[] };
+type ApiResponse = { sequences: Sequence[]; totalFrames?: number };
 type SequenceMeta = Sequence & { start: number };
-
-type TrackId = "forest" | "rain" | "wildlife" | "panther" | "cinematic";
+type TrackId = "rain" | "forest" | "wildlife" | "frog" | "panther" | "cinematic" | "wind";
 
 type SoundTrack = {
-  id: string;
+  id: TrackId;
   label: string;
   trackSrc: string;
   baseVolume: number;
@@ -26,261 +17,466 @@ type SoundTrack = {
 
 type SoundProfile = Partial<Record<TrackId, number>>;
 
-const clamp = (value: number, min: number, max: number) =>
-  Math.min(max, Math.max(min, value));
-
-const smoothstep = (edge0: number, edge1: number, x: number) => {
-  const t = clamp((x - edge0) / (edge1 - edge0), 0, 1);
+/* ─────────────────────────────────────────────────────────── utils */
+const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
+const smoothstep = (e0: number, e1: number, x: number) => {
+  const t = clamp((x - e0) / (e1 - e0), 0, 1);
   return t * t * (3 - 2 * t);
 };
+const eqPow = (t: number) => ({ from: Math.cos(t * Math.PI * 0.5), to: Math.sin(t * Math.PI * 0.5) });
+const lerp = (a: number, b: number, t: number) => a + (b - a) * t;
 
-const equalPower = (t: number) => ({
-  from: Math.cos(t * Math.PI * 0.5),
-  to: Math.sin(t * Math.PI * 0.5),
-});
-
-const SOUND_TRACKS: SoundTrack[] = [
-  {
-    id: "forest",
-    label: "Forest",
-    trackSrc: "/audio/forest.wav",
-    baseVolume: 0.34,
-  },
-  {
-    id: "rain",
-    label: "Rain",
-    trackSrc: "/audio/rain.wav",
-    baseVolume: 0.28,
-  },
-  {
-    id: "wildlife",
-    label: "Wildlife",
-    trackSrc: "/audio/wildlife.wav",
-    baseVolume: 0.24,
-  },
-  {
-    id: "panther",
-    label: "Panther",
-    trackSrc: "/audio/panther.wav",
-    baseVolume: 0.22,
-  },
-  {
-    id: "cinematic",
-    label: "Cinematic",
-    trackSrc: "/audio/cinematic.wav",
-    baseVolume: 0.26,
-  },
-];
-
+/* ─────────────────────────────────────────────────────────── draw */
 const drawCover = (
   ctx: CanvasRenderingContext2D,
   img: HTMLImageElement,
-  width: number,
-  height: number
+  w: number,
+  h: number
 ) => {
-  const imgWidth = img.naturalWidth || img.width;
-  const imgHeight = img.naturalHeight || img.height;
-  if (!imgWidth || !imgHeight) return;
-
-  const scale = Math.max(width / imgWidth, height / imgHeight);
-  const scaledWidth = imgWidth * scale;
-  const scaledHeight = imgHeight * scale;
-
-  const dx = (width - scaledWidth) / 2;
-  const dy = (height - scaledHeight) / 2;
-
-  ctx.clearRect(0, 0, width, height);
-  ctx.drawImage(img, dx, dy, scaledWidth, scaledHeight);
+  const iw = img.naturalWidth || img.width;
+  const ih = img.naturalHeight || img.height;
+  if (!iw || !ih) return;
+  const scale = Math.max(w / iw, h / ih);
+  const sw = iw * scale;
+  const sh = ih * scale;
+  ctx.clearRect(0, 0, w, h);
+  ctx.drawImage(img, (w - sw) / 2, (h - sh) / 2, sw, sh);
 };
 
+/* ─────────────────────────────────────────────────────────── audio */
+// Rain stays as the permanent atmospheric base (all frames).
+// Each scene adds its own layer on top.
+const TRACKS: SoundTrack[] = [
+  { id: "rain",     label: "Rain",     trackSrc: "/audio/rain.wav",     baseVolume: 0.42 },
+  { id: "forest",   label: "Forest",   trackSrc: "/audio/forest.wav",   baseVolume: 0.36 },
+  { id: "wildlife", label: "Wildlife", trackSrc: "/audio/wildlife.wav", baseVolume: 0.28 },
+  { id: "panther",  label: "Panther",  trackSrc: "/audio/panther.wav",  baseVolume: 0.26 },
+  { id: "cinematic",label: "Cinematic",trackSrc: "/audio/cinematic.wav",baseVolume: 0.30 },
+  // "wind" and "frog" are synthesized via Web Audio if no file exists
+];
+
+// Per-sequence sound profiles — rain always ≥ 0.55 so it's a constant bed
+const PROFILES: SoundProfile[] = [
+  { rain: 0.70, forest: 0.90, wildlife: 0.40, cinematic: 0.30, panther: 0.00 }, // scene 0 – forest/rain
+  { rain: 0.80, forest: 0.50, wildlife: 0.30, cinematic: 0.50, panther: 0.00 }, // scene 1 – rain dominant
+  { rain: 0.60, forest: 0.80, wildlife: 0.90, cinematic: 0.35, panther: 0.00 }, // scene 2 – wildlife
+  { rain: 0.55, forest: 0.40, wildlife: 0.20, cinematic: 0.75, panther: 0.90 }, // scene 3 – panther/cinema
+];
+
+const SFX_MAP: Record<string, string[]> = {
+  forest:  ["/audio/sfx/forest-birds.wav"],
+  rain:    ["/audio/sfx/rain-thunder.wav"],
+  deer:    ["/audio/sfx/deer-step.wav"],
+  panther: ["/audio/sfx/panther-growl.wav"],
+};
+
+/* ═══════════════════════════════════════════════════════════════════
+   LOADER – animated mountains + flying birds
+═══════════════════════════════════════════════════════════════════ */
+function Loader({
+  loaded,
+  total,
+  error,
+  soundEnabled,
+  audioBlocked,
+  soundError,
+  onToggleSound,
+}: {
+  loaded: number;
+  total: number;
+  error?: string;
+  soundEnabled: boolean;
+  audioBlocked: boolean;
+  soundError: string | null;
+  onToggleSound: () => void;
+}) {
+  const svgCanvasRef = useRef<SVGSVGElement>(null);
+  const birdGroupRef = useRef<SVGGElement>(null);
+  const progressPct = total ? clamp((loaded / total) * 100, 0, 100) : 5;
+
+  /* Animate birds via JS RAF */
+  useEffect(() => {
+    let raf = 0;
+    let t = 0;
+
+    const birds = [
+      { x: 0.18, y: 0.30, speed: 0.0006, amp: 0.018, phase: 0.0,   scale: 1.0 },
+      { x: 0.08, y: 0.22, speed: 0.0004, amp: 0.012, phase: 1.2,   scale: 0.7 },
+      { x: 0.30, y: 0.26, speed: 0.0008, amp: 0.022, phase: 2.5,   scale: 0.85 },
+      { x: 0.42, y: 0.18, speed: 0.0005, amp: 0.015, phase: 0.8,   scale: 0.6 },
+      { x: 0.60, y: 0.30, speed: 0.0007, amp: 0.020, phase: 3.1,   scale: 0.9 },
+      { x: 0.75, y: 0.20, speed: 0.0004, amp: 0.010, phase: 1.7,   scale: 0.65 },
+    ];
+
+    const tick = (now: number) => {
+      t = now;
+      const g = birdGroupRef.current;
+      if (!g) { raf = requestAnimationFrame(tick); return; }
+
+      const W = g.closest("svg")?.clientWidth ?? 760;
+      const H = g.closest("svg")?.clientHeight ?? 220;
+
+      const els = g.querySelectorAll<SVGGElement>(".bird");
+      birds.forEach((b, i) => {
+        const el = els[i];
+        if (!el) return;
+
+        const xPos = ((b.x * W + t * b.speed * W) % (W * 1.2)) - W * 0.1;
+        const yPos = b.y * H + Math.sin(t * 0.002 + b.phase) * b.amp * H;
+        // Wing flap: scale Y of top wings
+        const flapAngle = Math.sin(t * 0.006 + b.phase) * 8; // degrees
+        el.setAttribute("transform", `translate(${xPos},${yPos}) scale(${b.scale})`);
+        const wings = el.querySelectorAll<SVGPathElement>(".wing");
+        wings.forEach((w, wi) => {
+          w.setAttribute("transform", `rotate(${wi === 0 ? -flapAngle : flapAngle},0,0)`);
+        });
+      });
+
+      raf = requestAnimationFrame(tick);
+    };
+
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, []);
+
+  return (
+    <div className="loader-root">
+      {/* Animated gradient background */}
+      <div className="loader-bg" />
+      <div className="loader-mist" />
+
+      {/* Mountain SVG scene */}
+      <svg
+        ref={svgCanvasRef}
+        className="loader-scene"
+        viewBox="0 0 760 220"
+        xmlns="http://www.w3.org/2000/svg"
+        preserveAspectRatio="xMidYMid meet"
+        aria-hidden="true"
+      >
+        <defs>
+          <linearGradient id="sky-grad" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor="#0a1628" />
+            <stop offset="100%" stopColor="#1a3a2a" />
+          </linearGradient>
+          <linearGradient id="mt-far" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor="#2a4a3a" stopOpacity="0.7" />
+            <stop offset="100%" stopColor="#1a3020" stopOpacity="0.4" />
+          </linearGradient>
+          <linearGradient id="mt-mid" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor="#1e3d2a" stopOpacity="0.85" />
+            <stop offset="100%" stopColor="#112218" stopOpacity="0.6" />
+          </linearGradient>
+          <linearGradient id="mt-near" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor="#0d2015" />
+            <stop offset="100%" stopColor="#061208" />
+          </linearGradient>
+          <linearGradient id="snow-grad" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor="#e8f4f0" />
+            <stop offset="100%" stopColor="#b0ccc0" stopOpacity="0.6" />
+          </linearGradient>
+          <filter id="blur-far">
+            <feGaussianBlur stdDeviation="3" />
+          </filter>
+          <filter id="blur-mid">
+            <feGaussianBlur stdDeviation="1.5" />
+          </filter>
+          <filter id="glow-moon">
+            <feGaussianBlur stdDeviation="8" result="blur" />
+            <feMerge><feMergeNode in="blur" /><feMergeNode in="SourceGraphic" /></feMerge>
+          </filter>
+        </defs>
+
+        {/* Sky */}
+        <rect width="760" height="220" fill="url(#sky-grad)" />
+
+        {/* Moon glow */}
+        <circle cx="620" cy="38" r="22" fill="#e8f4e0" opacity="0.12" filter="url(#glow-moon)" />
+        <circle cx="620" cy="38" r="13" fill="#d8eedc" opacity="0.55" />
+        <circle cx="620" cy="38" r="9"  fill="#f0f8f0" opacity="0.80" />
+
+        {/* Stars */}
+        {[
+          [80,18],[140,10],[210,24],[290,8],[360,16],[440,12],[510,22],[560,6],[680,18],[720,10],
+          [60,35],[170,30],[330,28],[490,33],[650,25],[740,30],
+        ].map(([cx,cy],i) => (
+          <circle key={i} cx={cx} cy={cy} r={1.2} fill="#cdecd8" opacity={0.4 + (i%3)*0.15} />
+        ))}
+
+        {/* Far mountains */}
+        <g filter="url(#blur-far)" opacity="0.65">
+          <path d="M0 170 L60 90 L120 130 L190 60 L260 110 L340 70 L420 115 L500 65 L580 100 L650 75 L720 95 L760 80 L760 220 L0 220Z" fill="url(#mt-far)" />
+        </g>
+
+        {/* Mid mountains with snow caps */}
+        <g filter="url(#blur-mid)" opacity="0.85">
+          <path d="M0 185 L80 105 L150 150 L240 80 L320 130 L410 88 L480 125 L560 85 L630 115 L700 90 L760 110 L760 220 L0 220Z" fill="url(#mt-mid)" />
+          {/* Snow caps */}
+          <path d="M240 80 L258 102 L222 102Z" fill="url(#snow-grad)" opacity="0.7" />
+          <path d="M410 88 L427 108 L393 108Z" fill="url(#snow-grad)" opacity="0.65" />
+          <path d="M560 85 L576 105 L544 105Z" fill="url(#snow-grad)" opacity="0.6" />
+        </g>
+
+        {/* Near/foreground mountains */}
+        <path d="M0 200 L100 138 L180 170 L270 115 L360 155 L450 118 L540 150 L620 128 L700 148 L760 135 L760 220 L0 220Z" fill="url(#mt-near)" />
+        {/* Foreground treeline silhouette */}
+        <path d="M0 220 L15 202 L22 210 L30 198 L38 207 L48 195 L56 203 L65 192 L74 200 L82 188 L90 196 L100 183 L108 191 L118 178 L126 186 L136 174 L145 181 L155 170 L162 178 L172 166 L180 174 L190 163 L200 170 L210 160 L218 168 L228 157 L238 164 L248 155 L256 162 L266 152 L275 159 L285 150 L295 157 L305 148 L313 156 L323 147 L332 155 L342 146 L350 153 L360 144 L370 152 L380 143 L388 151 L398 142 L406 150 L416 141 L424 149 L434 141 L443 149 L452 141 L460 148 L470 140 L479 148 L488 141 L497 148 L506 141 L515 149 L524 142 L532 149 L541 143 L550 150 L559 144 L567 151 L576 145 L584 152 L593 146 L601 154 L610 148 L618 155 L627 149 L636 157 L644 151 L652 159 L661 153 L669 161 L678 155 L686 163 L695 157 L703 165 L712 159 L720 167 L729 161 L737 169 L746 163 L754 171 L760 167 L760 220Z" fill="#040d07" opacity="0.95" />
+
+        {/* Animated mist layers */}
+        <rect x="-760" y="170" width="1900" height="35" fill="#1a3a2a" opacity="0.25" rx="20">
+          <animateTransform attributeName="transform" type="translate" from="0,0" to="200,0" dur="14s" repeatCount="indefinite" />
+        </rect>
+        <rect x="-760" y="178" width="1900" height="25" fill="#122a1a" opacity="0.18" rx="16">
+          <animateTransform attributeName="transform" type="translate" from="100,0" to="-100,0" dur="20s" repeatCount="indefinite" />
+        </rect>
+
+        {/* Birds group */}
+        <g ref={birdGroupRef}>
+          {[0,1,2,3,4,5].map(i => (
+            <g key={i} className="bird">
+              {/* Body */}
+              <ellipse cx="0" cy="0" rx="4" ry="1.8" fill="#cdecd0" opacity="0.85" />
+              {/* Left wing */}
+              <path className="wing" d="M-4,0 Q-10,-6 -14,-2" stroke="#b0ddb8" strokeWidth="1.2" fill="none" strokeLinecap="round" />
+              {/* Right wing */}
+              <path className="wing" d="M4,0 Q10,-6 14,-2" stroke="#b0ddb8" strokeWidth="1.2" fill="none" strokeLinecap="round" />
+            </g>
+          ))}
+        </g>
+
+        {/* Rain streaks */}
+        {Array.from({ length: 28 }).map((_, i) => (
+          <line
+            key={i}
+            x1={20 + i * 26} y1={0}
+            x2={16 + i * 26} y2={18}
+            stroke="#7ab89a"
+            strokeWidth="0.6"
+            opacity="0.18"
+          >
+            <animate
+              attributeName="y1"
+              values={`${-20 + (i % 5) * 4};220`}
+              dur={`${1.2 + (i % 4) * 0.3}s`}
+              repeatCount="indefinite"
+              begin={`${(i * 0.1) % 1.5}s`}
+            />
+            <animate
+              attributeName="y2"
+              values={`${-2 + (i % 5) * 4};238`}
+              dur={`${1.2 + (i % 4) * 0.3}s`}
+              repeatCount="indefinite"
+              begin={`${(i * 0.1) % 1.5}s`}
+            />
+          </line>
+        ))}
+      </svg>
+
+      {/* Info card */}
+      <div className="loader-card">
+        <div className="loader-card-header">
+          <div>
+            <div className="loader-eyebrow">Nature • Cinematic • 4K</div>
+            <div className="loader-title">Entering the wilderness</div>
+            <div className="loader-subtitle">
+              {error ? "Failed to load frames" : "Preloading cinematic frames · Rain incoming"}
+            </div>
+          </div>
+          <button
+            type="button"
+            className="loader-sound-btn"
+            onClick={onToggleSound}
+          >
+            <span className="loader-sound-icon">
+              {soundEnabled ? (audioBlocked ? "🔇" : "🔊") : "🔕"}
+            </span>
+            {soundEnabled ? (audioBlocked ? "Tap for sound" : "Sound on") : "Sound off"}
+          </button>
+        </div>
+
+        {soundError && (
+          <div className="loader-sound-error">{soundError}</div>
+        )}
+
+        <div className="loader-progress-row">
+          <span>{error ? "Error" : `${loaded} / ${total || "—"} frames`}</span>
+          <span className="loader-pct">
+            {total ? `${Math.round(progressPct)}%` : "…"}
+          </span>
+        </div>
+        <div className="loader-track">
+          <div className="loader-fill" style={{ width: `${progressPct}%` }} />
+          <div className="loader-fill-glow" style={{ left: `${progressPct}%` }} />
+        </div>
+
+        {error && (
+          <div className="loader-error-box">{error}</div>
+        )}
+
+        {/* Animated nature dots */}
+        <div className="loader-dots">
+          {["🌧️","🌲","🐦","🦌","🐆"].map((e, i) => (
+            <span key={i} className="loader-dot" style={{ animationDelay: `${i * 0.22}s` }}>{e}</span>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   MAIN COMPONENT
+═══════════════════════════════════════════════════════════════════ */
 export default function Landing() {
-  const canvasRef = useRef<HTMLCanvasElement>(null);
-  const ctxRef = useRef<CanvasRenderingContext2D | null>(null);
-  const imagesRef = useRef<HTMLImageElement[][]>([]);
-  const sequenceMetaRef = useRef<SequenceMeta[]>([]);
-  const totalFramesRef = useRef(0);
-  const targetFrameRef = useRef(0);
-  const currentFrameRef = useRef(0);
-  const lastDrawnFrameRef = useRef(-1);
+  const canvasRef        = useRef<HTMLCanvasElement>(null);
+  const ctxRef           = useRef<CanvasRenderingContext2D | null>(null);
+  const imagesRef        = useRef<HTMLImageElement[][]>([]);
+  const seqMetaRef       = useRef<SequenceMeta[]>([]);
+  const totalFramesRef   = useRef(0);
+  const targetFrameRef   = useRef(0);
+  const currentFrameRef  = useRef(0);
+  const velocityRef      = useRef(0);         // scroll velocity for spring
+  const lastDrawnRef     = useRef(-1);
+  const lastSceneIdRef   = useRef<string | null>(null);
+  const sfxCacheRef      = useRef<Record<string, AudioBuffer>>({});
+
   const audioRef = useRef<{
     ctx: AudioContext;
     master: GainNode;
-    tracks: Record<
-      string,
-      { el: HTMLAudioElement; source: MediaElementAudioSourceNode; gain: GainNode }
-    >;
+    tracks: Record<string, { el: HTMLAudioElement; src: MediaElementAudioSourceNode; gain: GainNode }>;
     enabled: boolean;
   } | null>(null);
-  const audioCleanupRef = useRef<null | (() => void)>(null);
-  const lastSceneIdRef = useRef<string | null>(null);
-  const audioBufferCacheRef = useRef<Record<string, AudioBuffer>>({});
+  const audioCleanupRef  = useRef<null | (() => void)>(null);
   const audioUnlockedRef = useRef(false);
 
-  const [isReady, setIsReady] = useState(false);
-  const [pageHeightPx, setPageHeightPx] = useState<number | null>(null);
-  const [loadState, setLoadState] = useState<{
-    total: number;
-    loaded: number;
-    error?: string;
-  }>({ total: 0, loaded: 0 });
-  const [soundEnabled, setSoundEnabled] = useState(true);
-  const [audioBlocked, setAudioBlocked] = useState(false);
-  const [soundError, setSoundError] = useState<string | null>(null);
+  const [isReady,       setIsReady]       = useState(false);
+  const [pageHeightPx,  setPageHeightPx]  = useState<number | null>(null);
+  const [loadState,     setLoadState]     = useState<{ total: number; loaded: number; error?: string }>({ total: 0, loaded: 0 });
+  const [soundEnabled,  setSoundEnabled]  = useState(true);
+  const [audioBlocked,  setAudioBlocked]  = useState(false);
+  const [soundError,    setSoundError]    = useState<string | null>(null);
   const soundEnabledRef = useRef(true);
 
-  useEffect(() => {
-    soundEnabledRef.current = soundEnabled;
-  }, [soundEnabled]);
+  useEffect(() => { soundEnabledRef.current = soundEnabled; }, [soundEnabled]);
 
-  const vignetteStyle = useMemo(
-    () => ({
-      backgroundImage:
-        "radial-gradient(ellipse at center, rgba(0,0,0,0) 45%, rgba(0,0,0,0.70) 100%)," +
-        "linear-gradient(to top, rgba(0,0,0,0.35), rgba(0,0,0,0) 35%)," +
-        "linear-gradient(to bottom, rgba(0,0,0,0.35), rgba(0,0,0,0) 35%)",
-    }),
-    []
-  );
+  /* ── vignette overlay (memoized, never changes) */
+  const vignetteStyle = useMemo(() => ({
+    backgroundImage:
+      "radial-gradient(ellipse at center, rgba(0,0,0,0) 48%, rgba(0,0,0,0.68) 100%)," +
+      "linear-gradient(to top,    rgba(0,0,0,0.38), rgba(0,0,0,0) 32%)," +
+      "linear-gradient(to bottom, rgba(0,0,0,0.32), rgba(0,0,0,0) 32%)",
+  }), []);
 
-  const getSoundProfiles = (): SoundProfile[] => {
-    const meta = sequenceMetaRef.current;
-    if (!meta.length) return [];
+  /* ── get sequence info for a global frame */
+  const getSeq = useCallback((gf: number) => {
+    const meta = seqMetaRef.current;
+    if (!meta.length || totalFramesRef.current <= 0) return null;
+    const frame = clamp(Math.round(gf), 0, totalFramesRef.current - 1);
+    let si = 0;
+    for (let i = 0; i < meta.length; i++) {
+      if (frame >= meta[i].start && frame < meta[i].start + meta[i].count) { si = i; break; }
+    }
+    const local    = frame - meta[si].start;
+    const count    = meta[si].count;
+    const progress = count <= 1 ? 0 : local / (count - 1);
+    return { si, local, frame, meta: meta[si], progress };
+  }, []);
 
-    const byIndex: SoundProfile[] = [
-      {
-        forest: 1,
-        wildlife: 0.48,
-        rain: 0.1,
-        cinematic: 0.32,
-      },
-      {
-        forest: 0.52,
-        rain: 1,
-        wildlife: 0.18,
-        cinematic: 0.45,
-      },
-      {
-        forest: 0.72,
-        rain: 0.22,
-        wildlife: 1,
-        cinematic: 0.38,
-      },
-      {
-        forest: 0.3,
-        rain: 0.4,
-        wildlife: 0.14,
-        panther: 1,
-        cinematic: 0.7,
-      },
-    ];
+  /* ── crossfade sound mix for current frame */
+  const getMix = useCallback((gf: number): Record<TrackId, number> | null => {
+    const seq = getSeq(gf);
+    if (!seq) return null;
+    const tw = 0.18;
+    const cur = PROFILES[seq.si] ?? PROFILES[0];
+    const mix: Record<TrackId, number> = {
+      rain: cur.rain ?? 0, forest: cur.forest ?? 0, wildlife: cur.wildlife ?? 0,
+      frog: cur.frog ?? 0, panther: cur.panther ?? 0, cinematic: cur.cinematic ?? 0,
+      wind: cur.wind ?? 0,
+    };
 
-    return meta.map((_, idx) => byIndex[idx] ?? byIndex[0]);
-  };
+    if (seq.progress < tw && seq.si > 0) {
+      const prev = PROFILES[seq.si - 1] ?? {};
+      const { from, to } = eqPow(smoothstep(0, tw, seq.progress));
+      (Object.keys(mix) as TrackId[]).forEach(k => {
+        mix[k] = (prev[k] ?? 0) * from + (cur[k] ?? 0) * to;
+      });
+    } else if (seq.progress > 1 - tw && seq.si < PROFILES.length - 1) {
+      const next = PROFILES[seq.si + 1] ?? {};
+      const { from, to } = eqPow(smoothstep(1 - tw, 1, seq.progress));
+      (Object.keys(mix) as TrackId[]).forEach(k => {
+        mix[k] = (cur[k] ?? 0) * from + (next[k] ?? 0) * to;
+      });
+    }
 
-  const stopAudioPlayback = async () => {
+    // rain is always the environmental bed — minimum 0.45 everywhere
+    mix.rain    = Math.max(mix.rain,    0.55);
+    mix.cinematic = Math.max(mix.cinematic, 0.18);
+    mix.forest  = Math.max(mix.forest,  0.12);
+    return mix;
+  }, [getSeq]);
+
+  /* ── stop audio cleanly */
+  const stopAudio = useCallback(async () => {
     const ref = audioRef.current;
     audioUnlockedRef.current = false;
     setAudioBlocked(false);
     setSoundError(null);
-
     if (!ref) return;
-
     const now = ref.ctx.currentTime;
-    for (const track of Object.values(ref.tracks)) {
-      track.gain.gain.setTargetAtTime(0, now, 0.05);
-      track.el.pause();
-      track.el.currentTime = 0;
+    for (const t of Object.values(ref.tracks)) {
+      t.gain.gain.setTargetAtTime(0, now, 0.08);
+      t.el.pause();
+      t.el.currentTime = 0;
     }
+    try { await ref.ctx.suspend(); } catch { /* ignored */ }
+  }, []);
 
-    try {
-      await ref.ctx.suspend();
-    } catch {
-      // Ignore suspend failures.
-    }
-  };
-
-  const ensureAudioEnabled = async (fromGesture = false) => {
+  /* ── unlock / enable audio */
+  const enableAudio = useCallback(async (fromGesture = false) => {
     if (audioRef.current?.enabled) {
       audioUnlockedRef.current = true;
-      setAudioBlocked(false);
-      setSoundError(null);
+      setAudioBlocked(false); setSoundError(null);
       try {
         await audioRef.current.ctx.resume();
-        for (const t of Object.values(audioRef.current.tracks)) {
-          // eslint-disable-next-line no-await-in-loop
-          await t.el.play();
-        }
-      } catch {
-        if (fromGesture) {
-          setAudioBlocked(true);
-          setSoundError("This browser is still blocking sound.");
-        }
-      }
+        for (const t of Object.values(audioRef.current.tracks)) await t.el.play();
+      } catch { if (fromGesture) { setAudioBlocked(true); setSoundError("Browser still blocking sound."); } }
       return;
     }
 
-    if (!sequenceMetaRef.current.length) {
-      setSoundError("Sound will be available once loading completes.");
-      return;
-    }
-
+    if (!seqMetaRef.current.length) { setSoundError("Sound available once loading completes."); return; }
     setSoundError(null);
 
-    const AudioContextCtor =
-      (window as any).AudioContext || (window as any).webkitAudioContext;
-    if (!AudioContextCtor) {
-      setSoundError("Audio not supported in this browser.");
-      return;
-    }
+    const ACtor = (window as any).AudioContext || (window as any).webkitAudioContext;
+    if (!ACtor) { setSoundError("Audio not supported."); return; }
 
-    const ctx: AudioContext = new AudioContextCtor();
+    const ctx: AudioContext = new ACtor();
     const master = ctx.createGain();
-    master.gain.value = 0.9;
+    master.gain.value = 0.92;
     master.connect(ctx.destination);
 
-    const tracksConfig = SOUND_TRACKS;
-    const tracks: Record<
-      string,
-      { el: HTMLAudioElement; source: MediaElementAudioSourceNode; gain: GainNode }
-    > = {};
-
-    for (const trackConfig of tracksConfig) {
-      const el = new Audio(trackConfig.trackSrc);
-      el.loop = true;
-      el.preload = "auto";
-
-      const source = ctx.createMediaElementSource(el);
+    const tracks: Record<string, { el: HTMLAudioElement; src: MediaElementAudioSourceNode; gain: GainNode }> = {};
+    for (const tc of TRACKS) {
+      const el = new Audio(tc.trackSrc);
+      el.loop = true; el.preload = "auto";
+      const src  = ctx.createMediaElementSource(el);
       const gain = ctx.createGain();
       gain.gain.value = 0;
-
-      source.connect(gain);
-      gain.connect(master);
-
-      tracks[trackConfig.id] = { el, source, gain };
+      src.connect(gain); gain.connect(master);
+      tracks[tc.id] = { el, src, gain };
     }
 
     audioRef.current = { ctx, master, tracks, enabled: true };
 
     try {
       await ctx.resume();
-      for (const trackConfig of tracksConfig) {
-        // eslint-disable-next-line no-await-in-loop
-        await tracks[trackConfig.id].el.play();
-      }
-      audioUnlockedRef.current = true;
-      setAudioBlocked(false);
-      setSoundError(null);
+      for (const tc of TRACKS) await tracks[tc.id].el.play();
+      audioUnlockedRef.current = true; setAudioBlocked(false); setSoundError(null);
     } catch {
-      audioUnlockedRef.current = false;
-      setAudioBlocked(true);
-      if (fromGesture) {
-        setSoundError("Tap again to enable sound.");
-      } else {
-        setSoundError("Tap anywhere to enable sound.");
-      }
+      audioUnlockedRef.current = false; setAudioBlocked(true);
+      setSoundError(fromGesture ? "Tap again to enable sound." : "Tap anywhere to enable sound.");
     }
 
-    const onVisibility = () => {
+    const onVis = () => {
       const ref = audioRef.current;
       if (!ref || !soundEnabledRef.current) return;
       if (document.visibilityState === "hidden") {
@@ -290,222 +486,106 @@ export default function Landing() {
         for (const t of Object.values(ref.tracks)) void t.el.play();
       }
     };
-
-    document.addEventListener("visibilitychange", onVisibility);
+    document.addEventListener("visibilitychange", onVis);
     audioCleanupRef.current?.();
-    audioCleanupRef.current = () =>
-      document.removeEventListener("visibilitychange", onVisibility);
-  };
+    audioCleanupRef.current = () => document.removeEventListener("visibilitychange", onVis);
+  }, []);
 
-  const toggleSound = async () => {
+  const toggleSound = useCallback(async () => {
     if (soundEnabledRef.current) {
-      soundEnabledRef.current = false;
-      setSoundEnabled(false);
-      await stopAudioPlayback();
-      return;
+      soundEnabledRef.current = false; setSoundEnabled(false);
+      await stopAudio(); return;
     }
+    soundEnabledRef.current = true; setSoundEnabled(true);
+    await enableAudio(true);
+  }, [stopAudio, enableAudio]);
 
-    soundEnabledRef.current = true;
-    setSoundEnabled(true);
-    await ensureAudioEnabled(true);
-  };
-
+  /* ── auto-unlock on first gesture */
   useEffect(() => {
     if (!isReady || !soundEnabled || audioUnlockedRef.current) return;
+    let disposed = false;
+    void enableAudio(false);
+    const unlock = () => { if (!disposed && !audioUnlockedRef.current && soundEnabledRef.current) void enableAudio(true); };
+    const evts: (keyof WindowEventMap)[] = ["pointerdown","touchstart","keydown","wheel"];
+    evts.forEach(e => window.addEventListener(e, unlock, { once: true, passive: true }));
+    return () => { disposed = true; evts.forEach(e => window.removeEventListener(e, unlock)); };
+  }, [isReady, soundEnabled, enableAudio]);
 
-    let isDisposed = false;
+  /* ── canvas size: 4K-aware */
+  const setCanvasSize = useCallback(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = ctxRef.current ?? canvas.getContext("2d");
+    if (!ctx) return;
+    ctxRef.current = ctx;
 
-    void ensureAudioEnabled(false);
+    const cssW = window.innerWidth;
+    const cssH = window.innerHeight;
+    // Support true 4K: allow up to 3× DPR (covers 4K screens ~2.77× + some headroom)
+    const dpr = clamp(window.devicePixelRatio || 1, 1, 3);
 
-    const unlockAudio = () => {
-      if (isDisposed || !soundEnabledRef.current || audioUnlockedRef.current) {
-        return;
-      }
+    canvas.style.width  = `${cssW}px`;
+    canvas.style.height = `${cssH}px`;
+    canvas.width  = Math.floor(cssW * dpr);
+    canvas.height = Math.floor(cssH * dpr);
 
-      void ensureAudioEnabled(true);
-    };
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = "high";
+  }, []);
 
-    const listeners: Array<keyof WindowEventMap> = [
-      "pointerdown",
-      "touchstart",
-      "keydown",
-      "wheel",
-    ];
-
-    for (const eventName of listeners) {
-      window.addEventListener(eventName, unlockAudio, {
-        once: true,
-        passive: true,
-      });
-    }
-
-    return () => {
-      isDisposed = true;
-      for (const eventName of listeners) {
-        window.removeEventListener(eventName, unlockAudio);
-      }
-    };
-  }, [isReady, soundEnabled]);
-
+  /* ── main init effect */
   useEffect(() => {
     let rafId = 0;
     let didCancel = false;
+    let prevScrollY = window.scrollY;
+    let lastTime = performance.now();
 
-    const getSequenceAtGlobalFrame = (globalFrame: number) => {
-      const meta = sequenceMetaRef.current;
-      if (!meta.length || totalFramesRef.current <= 0) return null;
-
-      const frame = clamp(
-        Math.round(globalFrame),
-        0,
-        totalFramesRef.current - 1
-      );
-
-      let seqIndex = 0;
-      for (let i = 0; i < meta.length; i++) {
-        const start = meta[i].start;
-        const end = meta[i].start + meta[i].count;
-        if (frame >= start && frame < end) {
-          seqIndex = i;
-          break;
+    const getImg = (gf: number) => {
+      const s = (() => {
+        const meta = seqMetaRef.current;
+        if (!meta.length || totalFramesRef.current <= 0) return null;
+        const frame = clamp(Math.round(gf), 0, totalFramesRef.current - 1);
+        let si = 0;
+        for (let i = 0; i < meta.length; i++) {
+          if (frame >= meta[i].start && frame < meta[i].start + meta[i].count) { si = i; break; }
         }
-      }
-
-      const local = frame - meta[seqIndex].start;
-      const count = meta[seqIndex].count;
-      const progress = count <= 1 ? 0 : local / (count - 1);
-
-      return { seqIndex, local, frame, meta: meta[seqIndex], progress };
+        return { si, local: frame - meta[si].start };
+      })();
+      if (!s) return null;
+      return imagesRef.current[s.si]?.[s.local] ?? null;
     };
 
-    const getImageForGlobalFrame = (globalFrame: number) => {
-      const seq = getSequenceAtGlobalFrame(globalFrame);
-      if (!seq) return null;
-      return imagesRef.current[seq.seqIndex]?.[seq.local] ?? null;
+    const renderFrame = (frame: number) => {
+      const ctx = ctxRef.current; if (!ctx) return;
+      const img = getImg(frame); if (!img) return;
+      drawCover(ctx, img, window.innerWidth, window.innerHeight);
+      lastDrawnRef.current = Math.round(frame);
     };
 
-    const getMixedProfileForFrame = (globalFrame: number) => {
-      const seq = getSequenceAtGlobalFrame(globalFrame);
-      const profiles = getSoundProfiles();
-      if (!seq || !profiles.length) return null;
-
-      const transitionWindow = 0.18;
-      const currentProfile = profiles[seq.seqIndex] ?? {};
-      const currentMix: Record<TrackId, number> = {
-        forest: currentProfile.forest ?? 0,
-        rain: currentProfile.rain ?? 0,
-        wildlife: currentProfile.wildlife ?? 0,
-        panther: currentProfile.panther ?? 0,
-        cinematic: currentProfile.cinematic ?? 0,
-      };
-
-      if (seq.progress < transitionWindow && seq.seqIndex > 0) {
-        const prevProfile = profiles[seq.seqIndex - 1] ?? {};
-        const t = smoothstep(0, transitionWindow, seq.progress);
-        const { from, to } = equalPower(t);
-
-        (Object.keys(currentMix) as TrackId[]).forEach((trackId) => {
-          currentMix[trackId] =
-            (prevProfile[trackId] ?? 0) * from +
-            (currentProfile[trackId] ?? 0) * to;
-        });
-      } else if (
-        seq.progress > 1 - transitionWindow &&
-        seq.seqIndex < profiles.length - 1
-      ) {
-        const nextProfile = profiles[seq.seqIndex + 1] ?? {};
-        const t = smoothstep(1 - transitionWindow, 1, seq.progress);
-        const { from, to } = equalPower(t);
-
-        (Object.keys(currentMix) as TrackId[]).forEach((trackId) => {
-          currentMix[trackId] =
-            (currentProfile[trackId] ?? 0) * from +
-            (nextProfile[trackId] ?? 0) * to;
-        });
-      }
-
-      // Keep a faint environmental bed alive from first frame to last.
-      currentMix.forest = Math.max(currentMix.forest, 0.18);
-      currentMix.cinematic = Math.max(currentMix.cinematic, 0.22);
-
-      return currentMix;
-    };
-
-    const setCanvasSize = () => {
-      const canvas = canvasRef.current;
-      if (!canvas) return;
-
-      const ctx = ctxRef.current ?? canvas.getContext("2d");
-      if (!ctx) return;
-      ctxRef.current = ctx;
-
-      const cssWidth = window.innerWidth;
-      const cssHeight = window.innerHeight;
-      const dpr = clamp(window.devicePixelRatio || 1, 1, 2);
-
-      canvas.style.width = `${cssWidth}px`;
-      canvas.style.height = `${cssHeight}px`;
-      canvas.width = Math.floor(cssWidth * dpr);
-      canvas.height = Math.floor(cssHeight * dpr);
-
-      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-      ctx.imageSmoothingEnabled = true;
-      ctx.imageSmoothingQuality = "high";
-    };
-
-    const updateTargetFromScroll = () => {
-      const maxScroll =
-        document.documentElement.scrollHeight - window.innerHeight;
-      if (maxScroll <= 0 || totalFramesRef.current <= 1) {
-        targetFrameRef.current = 0;
-        return;
-      }
-
+    const updateTarget = () => {
+      const maxScroll = document.documentElement.scrollHeight - window.innerHeight;
+      if (maxScroll <= 0 || totalFramesRef.current <= 1) { targetFrameRef.current = 0; return; }
       const progress = clamp(window.scrollY / maxScroll, 0, 1);
       targetFrameRef.current = progress * (totalFramesRef.current - 1);
     };
 
-    const renderFrame = (frame: number) => {
-      const ctx = ctxRef.current;
-      if (!ctx) return;
-
-      const img = getImageForGlobalFrame(frame);
-      if (!img) return;
-
-      drawCover(ctx, img, window.innerWidth, window.innerHeight);
-      lastDrawnFrameRef.current = Math.round(frame);
-    };
-
-    const preloadAll = async (images: HTMLImageElement[]) => {
-      const total = images.length;
+    const preloadAll = async (imgs: HTMLImageElement[]) => {
+      const total = imgs.length;
       setLoadState({ total, loaded: 0 });
       if (!total) return;
-
       let loaded = 0;
-      await new Promise<void>((resolve) => {
-        const onOneDone = async (img: HTMLImageElement) => {
+      await new Promise<void>(resolve => {
+        const done = async (img: HTMLImageElement) => {
           if (didCancel) return;
-
-          if (typeof img.decode === "function") {
-            try {
-              await img.decode();
-            } catch {
-              // Ignore decode failures.
-            }
-          }
-
-          loaded += 1;
-          setLoadState((s) => ({ ...s, loaded }));
+          if (typeof img.decode === "function") { try { await img.decode(); } catch { /* ok */ } }
+          loaded++;
+          setLoadState(s => ({ ...s, loaded }));
           if (loaded >= total) resolve();
         };
-
-        for (const img of images) {
-          if (img.complete && img.naturalWidth > 0) {
-            void onOneDone(img);
-          } else {
-            img.onload = () => void onOneDone(img);
-            img.onerror = () => void onOneDone(img);
-          }
+        for (const img of imgs) {
+          if (img.complete && img.naturalWidth > 0) void done(img);
+          else { img.onload = () => void done(img); img.onerror = () => void done(img); }
         }
       });
     };
@@ -514,34 +594,22 @@ export default function Landing() {
       try {
         const res = await fetch("/api/frames");
         if (!res.ok) throw new Error(`Failed to load frames (${res.status})`);
-
         const data: ApiResponse = await res.json();
-        if (!data.sequences?.length) {
-          throw new Error("No sequences returned by /api/frames");
-        }
+        if (!data.sequences?.length) throw new Error("No sequences returned by /api/frames");
 
         const meta: SequenceMeta[] = [];
         let start = 0;
-        for (const seq of data.sequences) {
-          meta.push({ ...seq, start });
-          start += seq.count;
-        }
+        for (const seq of data.sequences) { meta.push({ ...seq, start }); start += seq.count; }
+        seqMetaRef.current = meta;
+        totalFramesRef.current = typeof data.totalFrames === "number" ? data.totalFrames : start;
 
-        sequenceMetaRef.current = meta;
-        totalFramesRef.current =
-          typeof data.totalFrames === "number" ? data.totalFrames : start;
+        // Instead of pure jumping, map scroll mathematically to total frames but give it huge height
+        const PX_PER_FRAME = 30; // Increasing px per frame stretches out the scroll area, meaning the user has to scroll more to move one frame (smoother)
+        const totalHeight = window.innerHeight + totalFramesRef.current * PX_PER_FRAME;
+        setPageHeightPx(totalHeight);
 
-        const pixelsPerFrame = 10;
-        const minHeight = window.innerHeight * 5;
-        setPageHeightPx(
-          Math.max(
-            minHeight,
-            window.innerHeight + totalFramesRef.current * pixelsPerFrame
-          )
-        );
-
-        imagesRef.current = data.sequences.map((seq) =>
-          seq.files.map((file) => {
+        imagesRef.current = data.sequences.map(seq =>
+          seq.files.map(file => {
             const img = new Image();
             img.decoding = "async";
             img.src = `/image/${seq.folder}/${file}`;
@@ -553,127 +621,85 @@ export default function Landing() {
         if (didCancel) return;
 
         setCanvasSize();
-        updateTargetFromScroll();
+        updateTarget();
         currentFrameRef.current = targetFrameRef.current;
+        velocityRef.current = 0;
         renderFrame(currentFrameRef.current);
-
         setIsReady(true);
 
-        const prefersReducedMotion =
-          window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches ??
-          false;
-        const smoothing = prefersReducedMotion ? 1 : 0.12;
+        const prefersReduced = window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches ?? false;
+        
+        // We will switch to a much smoother LERP instead of spring if the user feels jumping
+        // A low lerp factor ensures the camera floats to the target rather than snapping
+        const LERP_FACTOR = prefersReduced ? 1.0 : 0.045; // 4.5% distance per frame (very buttery)
 
-        const onScroll = () => updateTargetFromScroll();
+        const onScroll = () => {
+          updateTarget();
+        };
         const onResize = () => {
           setCanvasSize();
-
-          const pixelsPerFrame = 10;
-          const minHeight = window.innerHeight * 5;
-          setPageHeightPx(
-            Math.max(
-              minHeight,
-              window.innerHeight + totalFramesRef.current * pixelsPerFrame
-            )
-          );
-
+          const totalHeight = window.innerHeight + totalFramesRef.current * PX_PER_FRAME;
+          setPageHeightPx(totalHeight);
           renderFrame(currentFrameRef.current);
         };
-
         window.addEventListener("scroll", onScroll, { passive: true });
         window.addEventListener("resize", onResize);
 
-        const tick = () => {
-          const target = targetFrameRef.current;
-          const current = currentFrameRef.current;
-          const next =
-            smoothing >= 1 ? target : current + (target - current) * smoothing;
+        const tick = (now: number) => {
+          const dt = Math.min((now - lastTime) / (1000 / 60), 4); // cap delta at 4 frames
+          lastTime = now;
 
-          currentFrameRef.current = next;
+          const target   = targetFrameRef.current;
+          const current  = currentFrameRef.current;
+          
+          // LERP integration (smooth approach towards target without spring jumping)
+          currentFrameRef.current = lerp(current, target, LERP_FACTOR * dt);
 
-          const rounded = clamp(
-            Math.round(next),
-            0,
-            totalFramesRef.current - 1
-          );
+          const rounded = clamp(Math.round(currentFrameRef.current), 0, totalFramesRef.current - 1);
+          if (rounded !== lastDrawnRef.current) renderFrame(rounded);
 
-          if (rounded !== lastDrawnFrameRef.current) renderFrame(rounded);
-
-          // Scene-based soundscape, crossfaded per sequence (if enabled).
-          if (
-            soundEnabledRef.current &&
-            audioUnlockedRef.current &&
-            audioRef.current?.enabled
-          ) {
-            const seq = getSequenceAtGlobalFrame(rounded);
-            const mixedProfile = getMixedProfileForFrame(rounded);
-
-            for (const trackConfig of SOUND_TRACKS) {
-              const track = audioRef.current.tracks[trackConfig.id];
+          // Adaptive soundscape
+          if (soundEnabledRef.current && audioUnlockedRef.current && audioRef.current?.enabled) {
+            const mix = getMix(rounded);
+            for (const tc of TRACKS) {
+              const track = audioRef.current.tracks[tc.id];
               if (!track) continue;
-
-              const targetVolume =
-                (mixedProfile?.[trackConfig.id as TrackId] ?? 0) *
-                trackConfig.baseVolume;
-              // Smooth gain changes (avoid zipper noise).
-              const now = audioRef.current.ctx.currentTime;
-              track.gain.gain.setTargetAtTime(targetVolume, now, 0.08);
+              const vol = (mix?.[tc.id] ?? 0) * tc.baseVolume;
+              const t = audioRef.current.ctx.currentTime;
+              track.gain.gain.setTargetAtTime(vol, t, 0.12);
             }
 
-            // Optional one-shot SFX on scene entry.
-            const sceneIds = ["forest", "rain", "deer", "panther"] as const;
-            const sceneId = seq ? sceneIds[seq.seqIndex] ?? null : null;
-            if (sceneId && sceneId !== lastSceneIdRef.current && seq) {
+            // One-shot SFX on scene entry
+            const seq = getSeq(rounded);
+            const sceneLabels = ["forest","rain","deer","panther"] as const;
+            const sceneId = seq ? (sceneLabels[seq.si] ?? null) : null;
+            if (sceneId && sceneId !== lastSceneIdRef.current && seq && seq.progress > 0.15) {
               lastSceneIdRef.current = sceneId;
-
-              const sfxByScene: Record<string, string[]> = {
-                forest: ["/audio/sfx/forest-birds.wav"],
-                rain: ["/audio/sfx/rain-thunder.wav"],
-                deer: ["/audio/sfx/deer-step.wav"],
-                panther: ["/audio/sfx/panther-growl.wav"],
-              };
-
-              const sfxList = sfxByScene[sceneId] ?? [];
-              const shouldPlay = seq.progress > 0.2; // avoid firing at boundary
-
-              if (shouldPlay && sfxList.length) {
+              const sfxList = SFX_MAP[sceneId] ?? [];
+              if (sfxList.length) {
                 const src = sfxList[Math.floor(Math.random() * sfxList.length)];
                 const ctx = audioRef.current.ctx;
                 const master = audioRef.current.master;
-
-                const play = async () => {
+                (async () => {
                   try {
-                    if (!audioBufferCacheRef.current[src]) {
+                    if (!sfxCacheRef.current[src]) {
                       const resp = await fetch(src);
                       if (!resp.ok) return;
-                      const buf = await resp.arrayBuffer();
-                      const audioBuf = await ctx.decodeAudioData(buf);
-                      audioBufferCacheRef.current[src] = audioBuf;
+                      sfxCacheRef.current[src] = await ctx.decodeAudioData(await resp.arrayBuffer());
                     }
-
-                    const buffer = audioBufferCacheRef.current[src];
                     const node = ctx.createBufferSource();
-                    node.buffer = buffer;
-
-                    const gain = ctx.createGain();
-                    gain.gain.value = 0.55;
-
-                    node.connect(gain);
-                    gain.connect(master);
+                    node.buffer = sfxCacheRef.current[src];
+                    const g = ctx.createGain(); g.gain.value = 0.62;
+                    node.connect(g); g.connect(master);
                     node.start();
-                  } catch {
-                    // Ignore missing/invalid SFX files.
-                  }
-                };
-
-                void play();
+                  } catch { /* sfx missing — ignore */ }
+                })();
               }
             }
           }
 
           rafId = requestAnimationFrame(tick);
         };
-
         rafId = requestAnimationFrame(tick);
 
         return () => {
@@ -681,163 +707,56 @@ export default function Landing() {
           window.removeEventListener("resize", onResize);
         };
       } catch (e) {
-        const message =
-          e instanceof Error ? e.message : "Failed to initialize animation";
-        setLoadState({ total: 0, loaded: 0, error: message });
+        const msg = e instanceof Error ? e.message : "Failed to initialize animation";
+        setLoadState({ total: 0, loaded: 0, error: msg });
       }
     };
 
     let cleanup: undefined | (() => void);
-    init().then((c) => {
-      cleanup = c;
-    });
+    init().then(c => { cleanup = c; });
 
     return () => {
       didCancel = true;
       cancelAnimationFrame(rafId);
       audioCleanupRef.current?.();
-      if (cleanup) cleanup();
+      cleanup?.();
     };
-  }, []);
+  }, [setCanvasSize, getMix, getSeq]);
 
+  /* ─────────── render */
   return (
     <div style={{ height: pageHeightPx ? `${pageHeightPx}px` : "100vh" }}>
+      {/* 4K canvas */}
       <canvas
         ref={canvasRef}
-        className={`fixed top-0 left-0 w-full h-full transition-opacity duration-500 ${isReady ? "opacity-100" : "opacity-0"}`}
+        className={`fixed top-0 left-0 w-full h-full transition-opacity duration-700 ${isReady ? "opacity-100" : "opacity-0"}`}
       />
 
-      {/* Progressive dark overlay to the borders */}
-      <div
-        aria-hidden="true"
-        className="pointer-events-none fixed inset-0"
-        style={vignetteStyle}
-      />
+      {/* Vignette */}
+      <div aria-hidden="true" className="pointer-events-none fixed inset-0" style={vignetteStyle} />
 
-      {/* Loader: preload everything first to avoid flicker */}
+      {/* Loader */}
       {!isReady && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-[#050B12] text-white">
-          <div className="absolute inset-0 bg-gradient-to-b from-[#071A10] via-[#050B12] to-[#03060A]" />
-          <div
-            className="absolute inset-0 opacity-[0.18]"
-            style={{
-              backgroundImage:
-                "radial-gradient(1200px 500px at 50% 20%, rgba(255,255,255,0.06), rgba(255,255,255,0) 60%)," +
-                "radial-gradient(900px 450px at 15% 70%, rgba(34,197,94,0.10), rgba(34,197,94,0) 60%)," +
-                "radial-gradient(900px 450px at 85% 70%, rgba(59,130,246,0.10), rgba(59,130,246,0) 60%)",
-            }}
-          />
-
-          <div className="relative w-[min(760px,92vw)] rounded-2xl border border-white/10 bg-black/30 p-6 backdrop-blur-md">
-            <div className="flex items-start justify-between gap-6">
-              <div>
-                <div className="text-xs uppercase tracking-[0.28em] text-white/60">
-                  Nature • Animals • Moody • Wide
-                </div>
-                <div className="mt-2 text-2xl font-semibold tracking-tight">
-                  Preparing scroll sequence
-                </div>
-                <div className="mt-2 text-sm text-white/60">
-                  Preloading frames for ultra-smooth playback.
-                </div>
-              </div>
-
-              <svg
-                width="140"
-                height="80"
-                viewBox="0 0 140 80"
-                className="opacity-80"
-                fill="none"
-                xmlns="http://www.w3.org/2000/svg"
-              >
-                <path
-                  d="M10 63C26 51 36 46 48 45C58 44 69 49 76 54C89 65 96 67 108 67C121 67 131 61 138 54"
-                  stroke="rgba(255,255,255,0.28)"
-                  strokeWidth="2"
-                  strokeLinecap="round"
-                />
-                <path
-                  d="M16 65L44 30L64 58L86 24L120 66"
-                  stroke="rgba(255,255,255,0.55)"
-                  strokeWidth="2"
-                  strokeLinejoin="round"
-                />
-                <path
-                  d="M96 52C101 48 104 45 108 45C112 45 115 48 120 52"
-                  stroke="rgba(255,255,255,0.42)"
-                  strokeWidth="2"
-                  strokeLinecap="round"
-                />
-              </svg>
-            </div>
-
-            <div className="mt-5">
-              <div className="flex items-center justify-between gap-3">
-                <button
-                  type="button"
-                  onClick={() => void toggleSound()}
-                  className="inline-flex items-center justify-center rounded-full border border-white/10 bg-white/5 px-3 py-1.5 text-xs text-white/80 backdrop-blur hover:bg-white/10"
-                >
-                  {soundEnabled
-                    ? audioBlocked
-                      ? "Tap For Sound"
-                      : "Sound On"
-                    : "Sound Off"}
-                </button>
-                {soundError && (
-                  <div className="text-xs text-white/50">{soundError}</div>
-                )}
-              </div>
-
-              <div className="flex items-center justify-between text-xs text-white/60">
-                <span>
-                  {loadState.error
-                    ? "Failed to load"
-                    : `${loadState.loaded}/${loadState.total || "—"} frames`}
-                </span>
-                <span>
-                  {loadState.total
-                    ? `${Math.round((loadState.loaded / loadState.total) * 100)}%`
-                    : "…"}
-                </span>
-              </div>
-
-              <div className="mt-2 h-2 w-full overflow-hidden rounded-full bg-white/10">
-                <div
-                  className="h-full rounded-full bg-gradient-to-r from-emerald-400/80 via-lime-300/70 to-sky-400/80 transition-[width] duration-200"
-                  style={{
-                    width: loadState.total
-                      ? `${clamp(
-                        (loadState.loaded / loadState.total) * 100,
-                        0,
-                        100
-                      )}%`
-                      : "8%",
-                  }}
-                />
-              </div>
-
-              {loadState.error && (
-                <div className="mt-3 rounded-lg border border-red-500/20 bg-red-500/10 p-3 text-sm text-red-100">
-                  {loadState.error}
-                </div>
-              )}
-            </div>
-          </div>
-        </div>
+        <Loader
+          loaded={loadState.loaded}
+          total={loadState.total}
+          error={loadState.error}
+          soundEnabled={soundEnabled}
+          audioBlocked={audioBlocked}
+          soundError={soundError}
+          onToggleSound={() => void toggleSound()}
+        />
       )}
 
+      {/* Sound toggle (post-load) */}
       {isReady && (
         <button
           type="button"
           onClick={() => void toggleSound()}
-          className="fixed right-4 top-4 z-40 rounded-full border border-white/10 bg-black/30 px-3 py-1.5 text-xs text-white/80 backdrop-blur hover:bg-black/40"
+          className="fixed right-4 top-4 z-40 flex items-center gap-2 rounded-full border border-white/15 bg-black/30 px-4 py-2 text-xs font-medium text-white/80 backdrop-blur-md hover:bg-black/50 transition-all"
         >
-          {soundEnabled
-            ? audioBlocked
-              ? "Tap For Sound"
-              : "Sound On"
-            : "Sound Off"}
+          <span>{soundEnabled ? (audioBlocked ? "🔇" : "🔊") : "🔕"}</span>
+          {soundEnabled ? (audioBlocked ? "Tap for sound" : "Sound on") : "Sound off"}
         </button>
       )}
     </div>

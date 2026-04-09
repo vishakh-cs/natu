@@ -1,26 +1,295 @@
 @import "tailwindcss";
 
+/* ─── root tokens ─── */
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  --background: #050b08;
+  --foreground: #e8f4e0;
+  --loader-card-bg: rgba(4, 14, 8, 0.72);
+  --accent-green: #4ade80;
+  --accent-cyan:  #34d399;
+  --accent-teal:  #2dd4bf;
 }
 
 @theme inline {
   --color-background: var(--background);
-  --color-foreground: var(--foreground);
+  --color-foreground:  var(--foreground);
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
-}
+/* ─── base reset ─── */
+*, *::before, *::after { box-sizing: border-box; }
 
-body {
+html, body {
+  margin: 0; padding: 0; border: 0;
   background: var(--background);
   color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  font-family: var(--font-geist-sans, system-ui, sans-serif);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  /* Ultra-smooth native scroll */
+  scroll-behavior: auto; /* we handle smoothing in JS */
+}
+
+/* ─── 4K canvas crisp rendering ─── */
+canvas {
+  image-rendering: -webkit-optimize-contrast;
+  image-rendering: crisp-edges;
+}
+
+/* ══════════════════════════════════════════════
+   LOADER STYLES
+══════════════════════════════════════════════ */
+
+/* Full-viewport overlay */
+.loader-root {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-end;
+  padding-bottom: clamp(2rem, 5vh, 4rem);
+  overflow: hidden;
+  color: #d4ead8;
+}
+
+/* Deep forest night gradient background */
+.loader-bg {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    170deg,
+    #040e08 0%,
+    #061510 18%,
+    #0a1f12 38%,
+    #060f0a 62%,
+    #030905 100%
+  );
+  animation: loader-bg-pulse 8s ease-in-out infinite alternate;
+}
+
+@keyframes loader-bg-pulse {
+  0%   { filter: brightness(1.00); }
+  50%  { filter: brightness(1.08); }
+  100% { filter: brightness(0.95); }
+}
+
+/* Atmospheric mist layer */
+.loader-mist {
+  position: absolute;
+  bottom: 0; left: -20%; right: -20%;
+  height: 45%;
+  background: radial-gradient(ellipse 120% 80% at 50% 100%,
+    rgba(30, 80, 40, 0.28) 0%,
+    rgba(10, 35, 18, 0.15) 50%,
+    transparent 100%
+  );
+  animation: mist-drift 18s ease-in-out infinite alternate;
+  pointer-events: none;
+}
+
+@keyframes mist-drift {
+  0%   { transform: translateX(-3%) scaleY(1.00); opacity: 0.8; }
+  50%  { transform: translateX( 3%) scaleY(1.08); opacity: 1.0; }
+  100% { transform: translateX(-1%) scaleY(0.95); opacity: 0.75; }
+}
+
+/* Mountain + birds SVG */
+.loader-scene {
+  position: absolute;
+  top: 0; left: 0;
+  width: 100%;
+  height: 55%;
+  min-height: 200px;
+  max-height: 480px;
+  filter: drop-shadow(0 4px 32px rgba(0,0,0,0.7));
+}
+
+/* Info card */
+.loader-card {
+  position: relative;
+  z-index: 10;
+  width: min(680px, 92vw);
+  background: var(--loader-card-bg);
+  border: 1px solid rgba(157, 219, 170, 0.14);
+  border-radius: 20px;
+  padding: 1.4rem 1.6rem 1.2rem;
+  backdrop-filter: blur(18px) saturate(1.4);
+  -webkit-backdrop-filter: blur(18px) saturate(1.4);
+  box-shadow:
+    0 0 0 1px rgba(74, 222, 128, 0.06),
+    0 8px 40px rgba(0, 0, 0, 0.55),
+    0 0 80px rgba(34, 100, 50, 0.12) inset;
+  animation: card-float 6s ease-in-out infinite alternate;
+}
+
+@keyframes card-float {
+  0%   { transform: translateY(0px); }
+  100% { transform: translateY(-5px); }
+}
+
+.loader-card-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.loader-eyebrow {
+  font-size: 0.65rem;
+  letter-spacing: 0.26em;
+  text-transform: uppercase;
+  color: rgba(157, 219, 170, 0.55);
+  font-weight: 500;
+}
+
+.loader-title {
+  margin-top: 0.35rem;
+  font-size: clamp(1.1rem, 2.5vw, 1.55rem);
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  background: linear-gradient(135deg, #c8eeca 0%, #7dd3aa 50%, #a3e0b8 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+
+.loader-subtitle {
+  margin-top: 0.3rem;
+  font-size: 0.8rem;
+  color: rgba(196, 236, 202, 0.50);
+  font-weight: 400;
+}
+
+/* Sound toggle */
+.loader-sound-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  flex-shrink: 0;
+  padding: 0.45rem 0.9rem;
+  border-radius: 999px;
+  border: 1px solid rgba(157, 219, 170, 0.18);
+  background: rgba(255, 255, 255, 0.05);
+  color: rgba(196, 236, 202, 0.75);
+  font-size: 0.72rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.2s, border-color 0.2s;
+  white-space: nowrap;
+}
+.loader-sound-btn:hover {
+  background: rgba(74, 222, 128, 0.10);
+  border-color: rgba(74, 222, 128, 0.30);
+}
+
+.loader-sound-icon { font-size: 0.9rem; }
+
+.loader-sound-error {
+  margin-top: 0.45rem;
+  font-size: 0.7rem;
+  color: rgba(196, 236, 202, 0.40);
+}
+
+/* Progress */
+.loader-progress-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 1rem;
+  font-size: 0.72rem;
+  color: rgba(157, 219, 170, 0.48);
+}
+
+.loader-pct {
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  color: rgba(157, 219, 170, 0.65);
+}
+
+/* Progress track */
+.loader-track {
+  position: relative;
+  margin-top: 0.5rem;
+  height: 5px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.07);
+  overflow: visible;
+}
+
+.loader-fill {
+  height: 100%;
+  border-radius: 999px;
+  background: linear-gradient(
+    90deg,
+    #22c55e 0%,
+    #34d399 40%,
+    #38bdf8 90%,
+    #818cf8 100%
+  );
+  background-size: 200% 100%;
+  animation: fill-shimmer 2.4s linear infinite;
+  transition: width 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+@keyframes fill-shimmer {
+  0%   { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
+/* Glow dot at fill edge */
+.loader-fill-glow {
+  position: absolute;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #6ee7b7;
+  box-shadow: 0 0 8px 4px rgba(110, 231, 183, 0.55);
+  pointer-events: none;
+  transition: left 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* Error box */
+.loader-error-box {
+  margin-top: 0.85rem;
+  padding: 0.65rem 0.9rem;
+  border-radius: 10px;
+  border: 1px solid rgba(239, 68, 68, 0.22);
+  background: rgba(239, 68, 68, 0.08);
+  font-size: 0.75rem;
+  color: #fca5a5;
+}
+
+/* Nature emoji dots */
+.loader-dots {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  margin-top: 0.85rem;
+}
+
+.loader-dot {
+  font-size: 0.95rem;
+  animation: dot-pop 1.6s ease-in-out infinite;
+  display: inline-block;
+  opacity: 0.7;
+}
+
+@keyframes dot-pop {
+  0%, 100% { transform: translateY(0) scale(1.0);  opacity: 0.65; }
+  50%       { transform: translateY(-4px) scale(1.12); opacity: 1.0; }
+}
+
+/* ══════════════════════════════════════════════
+   SOUND TOGGLE BUTTON (post-load)
+══════════════════════════════════════════════ */
+.fixed.right-4.top-4 {
+  transition: opacity 0.3s, transform 0.3s;
+}
+.fixed.right-4.top-4:hover {
+  transform: scale(1.04);
 }

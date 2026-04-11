@@ -567,7 +567,19 @@ export default function Landing() {
           // LERP integration (smooth approach towards target without spring jumping)
           currentFrameRef.current = lerp(current, target, LERP_FACTOR * dt);
 
-          const rounded = clamp(Math.round(currentFrameRef.current), 0, totalFramesRef.current - 1);
+          // Handle seamless loop visual blend at the very end
+          let displayFrame = currentFrameRef.current;
+          const loopZone = totalFramesRef.current - 10; // last 10 frames
+          if (displayFrame > loopZone) {
+            // As we approach the end of frame6, we blend back to frame 0
+            const loopProgress = clamp((displayFrame - loopZone) / 10, 0, 1);
+            if (loopProgress > 0.8) {
+              // Smooth jump/loop: if we are basically at the end, show frame 0
+              displayFrame = lerp(displayFrame, 0, loopProgress);
+            }
+          }
+
+          const rounded = clamp(Math.round(displayFrame), 0, totalFramesRef.current - 1);
           if (rounded !== lastDrawnRef.current) renderFrame(rounded);
 
           // Update active overlay
@@ -672,17 +684,9 @@ export default function Landing() {
 
   /* ─────────── render */
   return (
-    <div style={{ height: pageHeightPx ? `${pageHeightPx}px` : "100vh" }}>
-      {/* 4K canvas */}
-      <canvas
-        ref={canvasRef}
-        className={`fixed top-0 left-0 w-full h-full transition-opacity duration-700 ${isReady ? "opacity-100" : "opacity-0"}`}
-      />
-
-      {/* Vignette */}
-      <div aria-hidden="true" className="pointer-events-none fixed inset-0" style={vignetteStyle} />
-
-      {/* ── Navbar ── */}
+    <div className="bg-[#020503] min-h-screen">
+      
+      {/* ── Navbar (Fixed globally) ── */}
       {isReady && (
         <motion.nav
           className="fixed top-0 left-0 right-0 z-50 flex items-center justify-between px-6 md:px-12 py-4"
@@ -701,7 +705,7 @@ export default function Landing() {
           {/* Nav Links */}
           <div className="flex items-center gap-1.5 md:gap-4">
             <a
-              href="#gallery"
+              href="/gallery"
               className="group flex items-center gap-2 px-3 md:px-4 py-1.5 md:py-2 rounded-full border border-white/10 bg-black/20 backdrop-blur-md text-white/80 text-[10px] md:text-xs tracking-[0.2em] uppercase font-medium hover:bg-white/10 hover:border-white/30 hover:text-white transition-all duration-300"
             >
               <svg className="w-3.5 h-3.5 opacity-70 group-hover:opacity-100 transition-opacity" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -730,33 +734,45 @@ export default function Landing() {
         </motion.nav>
       )}
 
-      {/* Progressively Revealing Text Overlays */}
-      <div className="pointer-events-none fixed inset-0 z-20">
-        <AnimatePresence mode="wait">
-          {activeOverlay >= 0 && OVERLAY_DATA[activeOverlay] && (
-            <motion.div
-              key={activeOverlay}
-              className={`absolute flex flex-col p-6 md:p-10 text-white drop-shadow-2xl max-w-[90vw] ${OVERLAY_DATA[activeOverlay].positionClass}`}
-              variants={overlayContainerVariants}
-              initial="hidden"
-              animate="visible"
-              exit="exit"
-            >
-              {/* Decorative Line */}
-              <motion.div variants={overlayTextVariants} className="w-10 md:w-16 h-[2px] bg-white opacity-60 mb-5" />
-              
-              <motion.div variants={overlayTextVariants} className="text-[#a3e0b8] font-oswald text-xs md:text-sm tracking-[0.35em] font-medium uppercase mb-2 drop-shadow-md">
-                {OVERLAY_DATA[activeOverlay].subtitle}
-              </motion.div>
-              <motion.h2 variants={overlayTextVariants} className="font-oswald text-5xl md:text-7xl lg:text-8xl font-bold uppercase leading-[0.9] tracking-tight text-white drop-shadow-2xl">
-                {OVERLAY_DATA[activeOverlay].title}
-              </motion.h2>
-              <motion.p variants={overlayTextVariants} className="font-inter text-base md:text-lg lg:text-xl mt-6 opacity-90 max-w-sm md:max-w-md lg:max-w-xl font-light leading-relaxed drop-shadow-lg text-white/95 border-l-[1px] border-white/20 pl-4">
-                {OVERLAY_DATA[activeOverlay].description}
-              </motion.p>
-            </motion.div>
-          )}
-        </AnimatePresence>
+      {/* ── Cinematic Sequence (Sticky Container) ── */}
+      <div style={{ height: pageHeightPx ? `${pageHeightPx}px` : "100vh" }} className="relative w-full">
+        <div className="sticky top-0 left-0 w-full h-[100dvh] overflow-hidden">
+          {/* 4K canvas */}
+          <canvas
+            ref={canvasRef}
+            className={`absolute top-0 left-0 w-full h-full transition-opacity duration-700 ${isReady ? "opacity-100" : "opacity-0"}`}
+          />
+
+          {/* Vignette */}
+          <div aria-hidden="true" className="pointer-events-none absolute inset-0" style={vignetteStyle} />
+
+          {/* Progressively Revealing Text Overlays */}
+          <div className="pointer-events-none absolute inset-0 z-20">
+            <AnimatePresence mode="wait">
+              {activeOverlay >= 0 && OVERLAY_DATA[activeOverlay] && (
+                <motion.div
+                  key={activeOverlay}
+                  className={`absolute flex flex-col p-6 md:p-10 text-white drop-shadow-2xl max-w-[90vw] ${OVERLAY_DATA[activeOverlay].positionClass}`}
+                  variants={overlayContainerVariants}
+                  initial="hidden"
+                  animate="visible"
+                  exit="exit"
+                >
+                  <motion.div variants={overlayTextVariants} className="w-10 md:w-16 h-[2px] bg-white opacity-60 mb-5" />
+                  <motion.div variants={overlayTextVariants} className="text-[#a3e0b8] font-oswald text-xs md:text-sm tracking-[0.35em] font-medium uppercase mb-2 drop-shadow-md">
+                    {OVERLAY_DATA[activeOverlay].subtitle}
+                  </motion.div>
+                  <motion.h2 variants={overlayTextVariants} className="font-oswald text-5xl md:text-7xl lg:text-8xl font-bold uppercase leading-[0.9] tracking-tight text-white drop-shadow-2xl">
+                    {OVERLAY_DATA[activeOverlay].title}
+                  </motion.h2>
+                  <motion.p variants={overlayTextVariants} className="font-inter text-base md:text-lg lg:text-xl mt-6 opacity-90 max-w-sm md:max-w-md lg:max-w-xl font-light leading-relaxed drop-shadow-lg text-white/95 border-l-[1px] border-white/20 pl-4">
+                    {OVERLAY_DATA[activeOverlay].description}
+                  </motion.p>
+                </motion.div>
+              )}
+            </AnimatePresence>
+          </div>
+        </div>
       </div>
 
       {/* Loader */}

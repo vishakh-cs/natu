@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { motion, AnimatePresence } from "framer-motion";
 
 /* ─────────────────────────────────────────────────────────── types */
 type Sequence = { folder: string; count: number; files: string[] };
@@ -52,15 +53,17 @@ const TRACKS: SoundTrack[] = [
   { id: "wildlife", label: "Wildlife", trackSrc: "/audio/wildlife.wav", baseVolume: 0.28 },
   { id: "panther",  label: "Panther",  trackSrc: "/audio/panther.wav",  baseVolume: 0.26 },
   { id: "cinematic",label: "Cinematic",trackSrc: "/audio/cinematic.wav",baseVolume: 0.30 },
-  // "wind" and "frog" are synthesized via Web Audio if no file exists
+  { id: "wind",      label: "Wind",     trackSrc: "/audio/wind.wav",     baseVolume: 0.38 },
 ];
 
 // Per-sequence sound profiles — rain always ≥ 0.55 so it's a constant bed
 const PROFILES: SoundProfile[] = [
   { rain: 0.70, forest: 0.90, wildlife: 0.40, cinematic: 0.30, panther: 0.00 }, // scene 0 – forest/rain
   { rain: 0.80, forest: 0.50, wildlife: 0.30, cinematic: 0.50, panther: 0.00 }, // scene 1 – rain dominant
-  { rain: 0.60, forest: 0.80, wildlife: 0.90, cinematic: 0.35, panther: 0.00 }, // scene 2 – wildlife
-  { rain: 0.55, forest: 0.40, wildlife: 0.20, cinematic: 0.75, panther: 0.90 }, // scene 3 – panther/cinema
+  { rain: 0.60, forest: 0.80, wildlife: 0.90, cinematic: 0.35, panther: 0.00, wind: 0.10 }, // scene 2 – wildlife
+  { rain: 0.55, forest: 0.40, wildlife: 0.20, cinematic: 0.75, panther: 0.90, wind: 0.20 }, // scene 3 – panther/cinema
+  { rain: 0.20, forest: 0.10, wildlife: 0.50, cinematic: 0.40, panther: 0.40, wind: 0.85 }, // scene 4 – desert (frame5)
+  { rain: 0.60, forest: 0.50, wildlife: 0.30, cinematic: 0.30, panther: 0.10, wind: 0.20 }, // scene 5 – return (frame6)
 ];
 
 const SFX_MAP: Record<string, string[]> = {
@@ -79,7 +82,6 @@ function Loader({
   error,
   soundEnabled,
   audioBlocked,
-  soundError,
   onToggleSound,
 }: {
   loaded: number;
@@ -87,242 +89,129 @@ function Loader({
   error?: string;
   soundEnabled: boolean;
   audioBlocked: boolean;
-  soundError: string | null;
   onToggleSound: () => void;
 }) {
-  const svgCanvasRef = useRef<SVGSVGElement>(null);
-  const birdGroupRef = useRef<SVGGElement>(null);
   const progressPct = total ? clamp((loaded / total) * 100, 0, 100) : 5;
-
-  /* Animate birds via JS RAF */
-  useEffect(() => {
-    let raf = 0;
-    let t = 0;
-
-    const birds = [
-      { x: 0.18, y: 0.30, speed: 0.0006, amp: 0.018, phase: 0.0,   scale: 1.0 },
-      { x: 0.08, y: 0.22, speed: 0.0004, amp: 0.012, phase: 1.2,   scale: 0.7 },
-      { x: 0.30, y: 0.26, speed: 0.0008, amp: 0.022, phase: 2.5,   scale: 0.85 },
-      { x: 0.42, y: 0.18, speed: 0.0005, amp: 0.015, phase: 0.8,   scale: 0.6 },
-      { x: 0.60, y: 0.30, speed: 0.0007, amp: 0.020, phase: 3.1,   scale: 0.9 },
-      { x: 0.75, y: 0.20, speed: 0.0004, amp: 0.010, phase: 1.7,   scale: 0.65 },
-    ];
-
-    const tick = (now: number) => {
-      t = now;
-      const g = birdGroupRef.current;
-      if (!g) { raf = requestAnimationFrame(tick); return; }
-
-      const W = g.closest("svg")?.clientWidth ?? 760;
-      const H = g.closest("svg")?.clientHeight ?? 220;
-
-      const els = g.querySelectorAll<SVGGElement>(".bird");
-      birds.forEach((b, i) => {
-        const el = els[i];
-        if (!el) return;
-
-        const xPos = ((b.x * W + t * b.speed * W) % (W * 1.2)) - W * 0.1;
-        const yPos = b.y * H + Math.sin(t * 0.002 + b.phase) * b.amp * H;
-        // Wing flap: scale Y of top wings
-        const flapAngle = Math.sin(t * 0.006 + b.phase) * 8; // degrees
-        el.setAttribute("transform", `translate(${xPos},${yPos}) scale(${b.scale})`);
-        const wings = el.querySelectorAll<SVGPathElement>(".wing");
-        wings.forEach((w, wi) => {
-          w.setAttribute("transform", `rotate(${wi === 0 ? -flapAngle : flapAngle},0,0)`);
-        });
-      });
-
-      raf = requestAnimationFrame(tick);
-    };
-
-    raf = requestAnimationFrame(tick);
-    return () => cancelAnimationFrame(raf);
-  }, []);
 
   return (
     <div className="loader-root">
-      {/* Animated gradient background */}
-      <div className="loader-bg" />
-      <div className="loader-mist" />
-
-      {/* Mountain SVG scene */}
-      <svg
-        ref={svgCanvasRef}
-        className="loader-scene"
-        viewBox="0 0 760 220"
-        xmlns="http://www.w3.org/2000/svg"
-        preserveAspectRatio="xMidYMid meet"
-        aria-hidden="true"
-      >
-        <defs>
-          <linearGradient id="sky-grad" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stopColor="#0a1628" />
-            <stop offset="100%" stopColor="#1a3a2a" />
-          </linearGradient>
-          <linearGradient id="mt-far" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stopColor="#2a4a3a" stopOpacity="0.7" />
-            <stop offset="100%" stopColor="#1a3020" stopOpacity="0.4" />
-          </linearGradient>
-          <linearGradient id="mt-mid" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stopColor="#1e3d2a" stopOpacity="0.85" />
-            <stop offset="100%" stopColor="#112218" stopOpacity="0.6" />
-          </linearGradient>
-          <linearGradient id="mt-near" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stopColor="#0d2015" />
-            <stop offset="100%" stopColor="#061208" />
-          </linearGradient>
-          <linearGradient id="snow-grad" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stopColor="#e8f4f0" />
-            <stop offset="100%" stopColor="#b0ccc0" stopOpacity="0.6" />
-          </linearGradient>
-          <filter id="blur-far">
-            <feGaussianBlur stdDeviation="3" />
-          </filter>
-          <filter id="blur-mid">
-            <feGaussianBlur stdDeviation="1.5" />
-          </filter>
-          <filter id="glow-moon">
-            <feGaussianBlur stdDeviation="8" result="blur" />
-            <feMerge><feMergeNode in="blur" /><feMergeNode in="SourceGraphic" /></feMerge>
-          </filter>
-        </defs>
-
-        {/* Sky */}
-        <rect width="760" height="220" fill="url(#sky-grad)" />
-
-        {/* Moon glow */}
-        <circle cx="620" cy="38" r="22" fill="#e8f4e0" opacity="0.12" filter="url(#glow-moon)" />
-        <circle cx="620" cy="38" r="13" fill="#d8eedc" opacity="0.55" />
-        <circle cx="620" cy="38" r="9"  fill="#f0f8f0" opacity="0.80" />
-
-        {/* Stars */}
-        {[
-          [80,18],[140,10],[210,24],[290,8],[360,16],[440,12],[510,22],[560,6],[680,18],[720,10],
-          [60,35],[170,30],[330,28],[490,33],[650,25],[740,30],
-        ].map(([cx,cy],i) => (
-          <circle key={i} cx={cx} cy={cy} r={1.2} fill="#cdecd8" opacity={0.4 + (i%3)*0.15} />
-        ))}
-
-        {/* Far mountains */}
-        <g filter="url(#blur-far)" opacity="0.65">
-          <path d="M0 170 L60 90 L120 130 L190 60 L260 110 L340 70 L420 115 L500 65 L580 100 L650 75 L720 95 L760 80 L760 220 L0 220Z" fill="url(#mt-far)" />
-        </g>
-
-        {/* Mid mountains with snow caps */}
-        <g filter="url(#blur-mid)" opacity="0.85">
-          <path d="M0 185 L80 105 L150 150 L240 80 L320 130 L410 88 L480 125 L560 85 L630 115 L700 90 L760 110 L760 220 L0 220Z" fill="url(#mt-mid)" />
-          {/* Snow caps */}
-          <path d="M240 80 L258 102 L222 102Z" fill="url(#snow-grad)" opacity="0.7" />
-          <path d="M410 88 L427 108 L393 108Z" fill="url(#snow-grad)" opacity="0.65" />
-          <path d="M560 85 L576 105 L544 105Z" fill="url(#snow-grad)" opacity="0.6" />
-        </g>
-
-        {/* Near/foreground mountains */}
-        <path d="M0 200 L100 138 L180 170 L270 115 L360 155 L450 118 L540 150 L620 128 L700 148 L760 135 L760 220 L0 220Z" fill="url(#mt-near)" />
-        {/* Foreground treeline silhouette */}
-        <path d="M0 220 L15 202 L22 210 L30 198 L38 207 L48 195 L56 203 L65 192 L74 200 L82 188 L90 196 L100 183 L108 191 L118 178 L126 186 L136 174 L145 181 L155 170 L162 178 L172 166 L180 174 L190 163 L200 170 L210 160 L218 168 L228 157 L238 164 L248 155 L256 162 L266 152 L275 159 L285 150 L295 157 L305 148 L313 156 L323 147 L332 155 L342 146 L350 153 L360 144 L370 152 L380 143 L388 151 L398 142 L406 150 L416 141 L424 149 L434 141 L443 149 L452 141 L460 148 L470 140 L479 148 L488 141 L497 148 L506 141 L515 149 L524 142 L532 149 L541 143 L550 150 L559 144 L567 151 L576 145 L584 152 L593 146 L601 154 L610 148 L618 155 L627 149 L636 157 L644 151 L652 159 L661 153 L669 161 L678 155 L686 163 L695 157 L703 165 L712 159 L720 167 L729 161 L737 169 L746 163 L754 171 L760 167 L760 220Z" fill="#040d07" opacity="0.95" />
-
-        {/* Animated mist layers */}
-        <rect x="-760" y="170" width="1900" height="35" fill="#1a3a2a" opacity="0.25" rx="20">
-          <animateTransform attributeName="transform" type="translate" from="0,0" to="200,0" dur="14s" repeatCount="indefinite" />
-        </rect>
-        <rect x="-760" y="178" width="1900" height="25" fill="#122a1a" opacity="0.18" rx="16">
-          <animateTransform attributeName="transform" type="translate" from="100,0" to="-100,0" dur="20s" repeatCount="indefinite" />
-        </rect>
-
-        {/* Birds group */}
-        <g ref={birdGroupRef}>
-          {[0,1,2,3,4,5].map(i => (
-            <g key={i} className="bird">
-              {/* Body */}
-              <ellipse cx="0" cy="0" rx="4" ry="1.8" fill="#cdecd0" opacity="0.85" />
-              {/* Left wing */}
-              <path className="wing" d="M-4,0 Q-10,-6 -14,-2" stroke="#b0ddb8" strokeWidth="1.2" fill="none" strokeLinecap="round" />
-              {/* Right wing */}
-              <path className="wing" d="M4,0 Q10,-6 14,-2" stroke="#b0ddb8" strokeWidth="1.2" fill="none" strokeLinecap="round" />
-            </g>
-          ))}
-        </g>
-
-        {/* Rain streaks */}
-        {Array.from({ length: 28 }).map((_, i) => (
-          <line
-            key={i}
-            x1={20 + i * 26} y1={0}
-            x2={16 + i * 26} y2={18}
-            stroke="#7ab89a"
-            strokeWidth="0.6"
-            opacity="0.18"
-          >
-            <animate
-              attributeName="y1"
-              values={`${-20 + (i % 5) * 4};220`}
-              dur={`${1.2 + (i % 4) * 0.3}s`}
-              repeatCount="indefinite"
-              begin={`${(i * 0.1) % 1.5}s`}
-            />
-            <animate
-              attributeName="y2"
-              values={`${-2 + (i % 5) * 4};238`}
-              dur={`${1.2 + (i % 4) * 0.3}s`}
-              repeatCount="indefinite"
-              begin={`${(i * 0.1) % 1.5}s`}
-            />
-          </line>
-        ))}
-      </svg>
-
-      {/* Info card */}
-      <div className="loader-card">
-        <div className="loader-card-header">
-          <div>
-            <div className="loader-eyebrow">Nature • Cinematic • 4K</div>
-            <div className="loader-title">Entering the wilderness</div>
-            <div className="loader-subtitle">
-              {error ? "Failed to load frames" : "Preloading cinematic frames · Rain incoming"}
-            </div>
-          </div>
-          <button
-            type="button"
-            className="loader-sound-btn"
-            onClick={onToggleSound}
-          >
-            <span className="loader-sound-icon">
-              {soundEnabled ? (audioBlocked ? "🔇" : "🔊") : "🔕"}
-            </span>
-            {soundEnabled ? (audioBlocked ? "Tap for sound" : "Sound on") : "Sound off"}
-          </button>
-        </div>
-
-        {soundError && (
-          <div className="loader-sound-error">{soundError}</div>
-        )}
-
-        <div className="loader-progress-row">
-          <span>{error ? "Error" : `${loaded} / ${total || "—"} frames`}</span>
-          <span className="loader-pct">
-            {total ? `${Math.round(progressPct)}%` : "…"}
+      <div className="loader-bg-simple" />
+      
+      <div className="flex flex-col items-center gap-8 relative z-10 w-full max-w-xs px-6">
+        {/* Simple Minimalist Loader */}
+        <div className="relative w-24 h-24 flex items-center justify-center">
+          <motion.div 
+            className="absolute inset-0 border-t-2 border-primary-500 rounded-full"
+            animate={{ rotate: 360 }}
+            transition={{ duration: 1.5, repeat: Infinity, ease: "linear" }}
+          />
+          <motion.div 
+            className="absolute inset-2 border-r-2 border-[#a3e0b8] opacity-50 rounded-full"
+            animate={{ rotate: -360 }}
+            transition={{ duration: 2, repeat: Infinity, ease: "linear" }}
+          />
+          <span className="font-oswald text-lg font-bold tracking-widest text-[#a3e0b8]">
+            {Math.round(progressPct)}%
           </span>
         </div>
-        <div className="loader-track">
-          <div className="loader-fill" style={{ width: `${progressPct}%` }} />
-          <div className="loader-fill-glow" style={{ left: `${progressPct}%` }} />
+
+        <div className="text-center">
+          <h1 className="font-oswald text-2xl tracking-[0.4em] text-white uppercase font-bold mb-2">
+            NATURALIS
+          </h1>
+          <p className="font-inter text-[10px] tracking-[0.5em] text-white/40 uppercase font-light">
+            {error ? "Loading Failed" : "Synchronizing Ecosystem"}
+          </p>
         </div>
 
-        {error && (
-          <div className="loader-error-box">{error}</div>
+        {error ? (
+          <div className="text-red-400 text-xs border border-red-500/20 bg-red-500/5 px-4 py-2 rounded uppercase tracking-widest">
+            {error}
+          </div>
+        ) : (
+          <button
+            type="button"
+            className="mt-4 flex items-center gap-3 px-6 py-2.5 rounded-full border border-white/10 bg-white/5 backdrop-blur-md text-[10px] tracking-[0.2em] uppercase text-white hover:bg-white/10 transition-all font-medium"
+            onClick={onToggleSound}
+          >
+            <span>{soundEnabled ? (audioBlocked ? "🔇" : "🔊") : "🔕"}</span>
+            {soundEnabled ? (audioBlocked ? "Unlock Audio" : "Music On") : "Music Off"}
+          </button>
         )}
-
-        {/* Animated nature dots */}
-        <div className="loader-dots">
-          {["🌧️","🌲","🐦","🦌","🐆"].map((e, i) => (
-            <span key={i} className="loader-dot" style={{ animationDelay: `${i * 0.22}s` }}>{e}</span>
-          ))}
+      </div>
+      
+      {/* Bottom status */}
+      <div className="absolute bottom-12 left-0 w-full text-center px-12">
+        <div className="w-full max-w-md mx-auto h-[1px] bg-white/5">
+          <motion.div 
+            className="h-full bg-[#a3e0b8]/40" 
+            initial={{ width: 0 }}
+            animate={{ width: `${progressPct}%` }}
+          />
+        </div>
+        <div className="mt-4 font-inter text-[9px] tracking-[0.3em] uppercase text-white/20">
+          Pre-caching 4K Visual Buffer
         </div>
       </div>
     </div>
   );
 }
+
+/* ═══════════════════════════════════════════════════════════════════
+   OVERLAY DATA & ANIMATIONS
+═══════════════════════════════════════════════════════════════════ */
+const OVERLAY_DATA = [
+  {
+    title: "NATURALIS",
+    subtitle: "A CINEMATIC JOURNEY",
+    description: "Embrace the wild and discover the deepest corners of the forest through 4K optical precision.",
+    positionClass: "bottom-[10%] left-[8%] md:bottom-[15%] md:left-[10%]"
+  },
+  {
+    title: "SCARLET MACAW",
+    subtitle: "THE TROPICAL CANOPY",
+    description: "Vibrant colors piercing through the dense rain-drenched leaves, echoing wild melodies.",
+    positionClass: "top-[15%] right-[8%] md:top-[20%] md:right-[10%]"
+  },
+  {
+    title: "POISON DART FROG",
+    subtitle: "JEWEL OF THE WETLANDS",
+    description: "A tiny but vibrant sentinel of the damp forest floor, holding hidden power.",
+    positionClass: "bottom-[15%] right-[8%] md:bottom-[20%] md:right-[10%]"
+  },
+  {
+    title: "BLACK PANTHER",
+    subtitle: "THE SHADOW",
+    description: "An elusive predator moving unseen in the cinematic darkness of the dense jungle.",
+    positionClass: "top-[15%] left-[8%] md:top-[25%] md:left-[10%]"
+  },
+  {
+    title: "WHITE-TAILED DEER",
+    subtitle: "GRACEFUL WANDERER",
+    description: "Silent footsteps through the ancient trees, embodying the serene heart of nature.",
+    positionClass: "bottom-[10%] left-[8%] md:bottom-[15%] md:left-[10%]"
+  },
+  {
+    title: "DESERT NOMADS",
+    subtitle: "SAHARA HORIZON",
+    description: "The resilient camels traversing the shifting sands under the relentless sun.",
+    positionClass: "top-[20%] right-[8%] md:top-[30%] md:right-[12%] items-end text-right"
+  }
+];
+
+const overlayContainerVariants = {
+  hidden: { opacity: 0 },
+  visible: {
+    opacity: 1,
+    transition: { staggerChildren: 0.2, delayChildren: 0.1 }
+  },
+  exit: { opacity: 0, transition: { duration: 0.6 } }
+};
+
+const overlayTextVariants = {
+  hidden: { y: 40, opacity: 0, filter: "blur(12px)" },
+  visible: { y: 0, opacity: 1, filter: "blur(0px)", transition: { type: "spring" as const, stiffness: 50, damping: 20 } }
+};
 
 /* ═══════════════════════════════════════════════════════════════════
    MAIN COMPONENT
@@ -355,6 +244,8 @@ export default function Landing() {
   const [soundEnabled,  setSoundEnabled]  = useState(true);
   const [audioBlocked,  setAudioBlocked]  = useState(false);
   const [soundError,    setSoundError]    = useState<string | null>(null);
+  const [activeOverlay, setActiveOverlay] = useState(-1);
+  const activeOverlayRef = useRef(-1);
   const soundEnabledRef = useRef(true);
 
   useEffect(() => { soundEnabledRef.current = soundEnabled; }, [soundEnabled]);
@@ -433,17 +324,26 @@ export default function Landing() {
 
   /* ── unlock / enable audio */
   const enableAudio = useCallback(async (fromGesture = false) => {
-    if (audioRef.current?.enabled) {
-      audioUnlockedRef.current = true;
+    const ref = audioRef.current;
+    if (ref?.enabled) {
       setAudioBlocked(false); setSoundError(null);
       try {
-        await audioRef.current.ctx.resume();
-        for (const t of Object.values(audioRef.current.tracks)) await t.el.play();
-      } catch { if (fromGesture) { setAudioBlocked(true); setSoundError("Browser still blocking sound."); } }
+        if (ref.ctx.state === "suspended") {
+          await ref.ctx.resume();
+        }
+        for (const t of Object.values(ref.tracks)) {
+          if (t.el.paused) {
+            await t.el.play().catch(() => {});
+          }
+        }
+        audioUnlockedRef.current = true;
+      } catch (e) {
+        if (fromGesture) { setAudioBlocked(true); setSoundError("Browser blocked sound."); }
+      }
       return;
     }
 
-    if (!seqMetaRef.current.length) { setSoundError("Sound available once loading completes."); return; }
+    if (!seqMetaRef.current.length) { return; }
     setSoundError(null);
 
     const ACtor = (window as any).AudioContext || (window as any).webkitAudioContext;
@@ -458,6 +358,7 @@ export default function Landing() {
     for (const tc of TRACKS) {
       const el = new Audio(tc.trackSrc);
       el.loop = true; el.preload = "auto";
+      el.crossOrigin = "anonymous";
       const src  = ctx.createMediaElementSource(el);
       const gain = ctx.createGain();
       gain.gain.value = 0;
@@ -468,22 +369,25 @@ export default function Landing() {
     audioRef.current = { ctx, master, tracks, enabled: true };
 
     try {
-      await ctx.resume();
-      for (const tc of TRACKS) await tracks[tc.id].el.play();
-      audioUnlockedRef.current = true; setAudioBlocked(false); setSoundError(null);
+      if (ctx.state === "suspended") await ctx.resume();
+      for (const tc of TRACKS) {
+        await tracks[tc.id].el.play().catch(() => {});
+      }
+      audioUnlockedRef.current = true; 
+      setAudioBlocked(false); setSoundError(null);
     } catch {
-      audioUnlockedRef.current = false; setAudioBlocked(true);
-      setSoundError(fromGesture ? "Tap again to enable sound." : "Tap anywhere to enable sound.");
+      audioUnlockedRef.current = false; 
+      setAudioBlocked(true);
     }
 
     const onVis = () => {
-      const ref = audioRef.current;
-      if (!ref || !soundEnabledRef.current) return;
+      const currentRef = audioRef.current;
+      if (!currentRef || !soundEnabledRef.current) return;
       if (document.visibilityState === "hidden") {
-        for (const t of Object.values(ref.tracks)) t.el.pause();
+        for (const t of Object.values(currentRef.tracks)) t.el.pause();
       } else {
-        void ref.ctx.resume();
-        for (const t of Object.values(ref.tracks)) void t.el.play();
+        if (currentRef.ctx.state === "suspended") void currentRef.ctx.resume();
+        for (const t of Object.values(currentRef.tracks)) void t.el.play().catch(() => {});
       }
     };
     document.addEventListener("visibilitychange", onVis);
@@ -568,6 +472,14 @@ export default function Landing() {
       if (maxScroll <= 0 || totalFramesRef.current <= 1) { targetFrameRef.current = 0; return; }
       const progress = clamp(window.scrollY / maxScroll, 0, 1);
       targetFrameRef.current = progress * (totalFramesRef.current - 1);
+
+      // Infinite loop: when we reach the last ~80px of scroll, silently scroll back to top
+      if (window.scrollY >= maxScroll - 80) {
+        // Jump scroll position back to 0 silently (no animation)
+        window.scrollTo({ top: 0, behavior: "instant" });
+        currentFrameRef.current = 0;
+        targetFrameRef.current = 0;
+      }
     };
 
     const preloadAll = async (imgs: HTMLImageElement[]) => {
@@ -658,14 +570,49 @@ export default function Landing() {
           const rounded = clamp(Math.round(currentFrameRef.current), 0, totalFramesRef.current - 1);
           if (rounded !== lastDrawnRef.current) renderFrame(rounded);
 
+          // Update active overlay
+          const seqOverlay = getSeq(rounded);
+          let currentOverlay = -1;
+          if (seqOverlay) {
+            const p = seqOverlay.progress;
+            if (seqOverlay.si === 0) {
+              if (p < 0.35) currentOverlay = 0;
+              else if (p > 0.45 && p < 0.95) currentOverlay = 1;
+            } else if (seqOverlay.si === 1) {
+              if (p > 0.10 && p < 0.95) currentOverlay = 2;
+            } else if (seqOverlay.si === 2) {
+              if (p > 0.10 && p < 0.95) currentOverlay = 3;
+            } else if (seqOverlay.si === 3) {
+              if (p > 0.10 && p < 0.95) currentOverlay = 4;
+            } else if (seqOverlay.si === 4) {
+              if (p > 0.10 && p < 0.95) currentOverlay = 5;
+            }
+          }
+          if (activeOverlayRef.current !== currentOverlay) {
+            activeOverlayRef.current = currentOverlay;
+            setActiveOverlay(currentOverlay);
+          }
+
           // Adaptive soundscape
-          if (soundEnabledRef.current && audioUnlockedRef.current && audioRef.current?.enabled) {
+          const currentAudio = audioRef.current;
+          if (soundEnabledRef.current && audioUnlockedRef.current && currentAudio?.enabled) {
+            // Check if context was suspended by browser and try to resume silently if needed
+            if (currentAudio.ctx.state === "suspended") {
+               currentAudio.ctx.resume().catch(() => {});
+            }
+
             const mix = getMix(rounded);
             for (const tc of TRACKS) {
-              const track = audioRef.current.tracks[tc.id];
+              const track = currentAudio.tracks[tc.id];
               if (!track) continue;
+
+              // Ensure element is playing if it should be
+              if (track.el.paused && audioUnlockedRef.current) {
+                track.el.play().catch(() => {});
+              }
+
               const vol = (mix?.[tc.id] ?? 0) * tc.baseVolume;
-              const t = audioRef.current.ctx.currentTime;
+              const t = currentAudio.ctx.currentTime;
               track.gain.gain.setTargetAtTime(vol, t, 0.12);
             }
 
@@ -678,8 +625,8 @@ export default function Landing() {
               const sfxList = SFX_MAP[sceneId] ?? [];
               if (sfxList.length) {
                 const src = sfxList[Math.floor(Math.random() * sfxList.length)];
-                const ctx = audioRef.current.ctx;
-                const master = audioRef.current.master;
+                const ctx = currentAudio.ctx;
+                const master = currentAudio.master;
                 (async () => {
                   try {
                     if (!sfxCacheRef.current[src]) {
@@ -735,6 +682,83 @@ export default function Landing() {
       {/* Vignette */}
       <div aria-hidden="true" className="pointer-events-none fixed inset-0" style={vignetteStyle} />
 
+      {/* ── Navbar ── */}
+      {isReady && (
+        <motion.nav
+          className="fixed top-0 left-0 right-0 z-50 flex items-center justify-between px-6 md:px-12 py-4"
+          initial={{ opacity: 0, y: -20 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ delay: 0.4, duration: 0.8, ease: "easeOut" }}
+        >
+          {/* Logo */}
+          <div className="flex items-center gap-3">
+            <div className="w-8 h-8 rounded-full border border-white/20 flex items-center justify-center bg-white/5 backdrop-blur-md">
+              <span className="text-white text-xs font-bold">N</span>
+            </div>
+            <span className="font-oswald text-white text-lg tracking-[0.3em] uppercase font-bold drop-shadow-lg">Naturalis</span>
+          </div>
+
+          {/* Nav Links */}
+          <div className="flex items-center gap-2 md:gap-4">
+            <a
+              href="#gallery"
+              className="group flex items-center gap-2 px-4 py-2 rounded-full border border-white/10 bg-black/20 backdrop-blur-md text-white/80 text-xs tracking-[0.2em] uppercase font-medium hover:bg-white/10 hover:border-white/30 hover:text-white transition-all duration-300"
+            >
+              <svg className="w-3.5 h-3.5 opacity-70 group-hover:opacity-100 transition-opacity" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
+              </svg>
+              Gallery
+            </a>
+            <a
+              href="#login"
+              className="flex items-center gap-2 px-5 py-2 rounded-full bg-white/10 border border-white/20 backdrop-blur-md text-white text-xs tracking-[0.2em] uppercase font-medium hover:bg-white/20 hover:border-white/40 transition-all duration-300"
+            >
+              <svg className="w-3.5 h-3.5 opacity-80" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
+              </svg>
+              Login
+            </a>
+            <button
+              type="button"
+              onClick={() => void toggleSound()}
+              className="w-9 h-9 rounded-full border border-white/10 bg-black/20 backdrop-blur-md flex items-center justify-center text-white/80 hover:bg-white/10 hover:border-white/30 hover:text-white transition-all duration-300"
+              title={soundEnabled ? "Sound On" : "Sound Off"}
+            >
+              <span className="text-sm">{soundEnabled ? (audioBlocked ? "🔇" : "🔊") : "🔕"}</span>
+            </button>
+          </div>
+        </motion.nav>
+      )}
+
+      {/* Progressively Revealing Text Overlays */}
+      <div className="pointer-events-none fixed inset-0 z-20">
+        <AnimatePresence mode="wait">
+          {activeOverlay >= 0 && OVERLAY_DATA[activeOverlay] && (
+            <motion.div
+              key={activeOverlay}
+              className={`absolute flex flex-col p-6 md:p-10 text-white drop-shadow-2xl max-w-[90vw] ${OVERLAY_DATA[activeOverlay].positionClass}`}
+              variants={overlayContainerVariants}
+              initial="hidden"
+              animate="visible"
+              exit="exit"
+            >
+              {/* Decorative Line */}
+              <motion.div variants={overlayTextVariants} className="w-10 md:w-16 h-[2px] bg-white opacity-60 mb-5" />
+              
+              <motion.div variants={overlayTextVariants} className="text-[#a3e0b8] font-oswald text-xs md:text-sm tracking-[0.35em] font-medium uppercase mb-2 drop-shadow-md">
+                {OVERLAY_DATA[activeOverlay].subtitle}
+              </motion.div>
+              <motion.h2 variants={overlayTextVariants} className="font-oswald text-5xl md:text-7xl lg:text-8xl font-bold uppercase leading-[0.9] tracking-tight text-white drop-shadow-2xl">
+                {OVERLAY_DATA[activeOverlay].title}
+              </motion.h2>
+              <motion.p variants={overlayTextVariants} className="font-inter text-base md:text-lg lg:text-xl mt-6 opacity-90 max-w-sm md:max-w-md lg:max-w-xl font-light leading-relaxed drop-shadow-lg text-white/95 border-l-[1px] border-white/20 pl-4">
+                {OVERLAY_DATA[activeOverlay].description}
+              </motion.p>
+            </motion.div>
+          )}
+        </AnimatePresence>
+      </div>
+
       {/* Loader */}
       {!isReady && (
         <Loader
@@ -743,21 +767,8 @@ export default function Landing() {
           error={loadState.error}
           soundEnabled={soundEnabled}
           audioBlocked={audioBlocked}
-          soundError={soundError}
           onToggleSound={() => void toggleSound()}
         />
-      )}
-
-      {/* Sound toggle (post-load) */}
-      {isReady && (
-        <button
-          type="button"
-          onClick={() => void toggleSound()}
-          className="fixed right-4 top-4 z-40 flex items-center gap-2 rounded-full border border-white/15 bg-black/30 px-4 py-2 text-xs font-medium text-white/80 backdrop-blur-md hover:bg-black/50 transition-all"
-        >
-          <span>{soundEnabled ? (audioBlocked ? "🔇" : "🔊") : "🔕"}</span>
-          {soundEnabled ? (audioBlocked ? "Tap for sound" : "Sound on") : "Sound off"}
-        </button>
       )}
     </div>
   );

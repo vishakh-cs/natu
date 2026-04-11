@@ -3,7 +3,7 @@
 import fs from "fs";
 import path from "path";
 
-const folders = ["frame1", "frame2", "frame3", "frame4"];
+const folders = ["frame1", "frame2", "frame3", "frame4", "frame5", "frame6"];
 
 export async function GET() {
   try {
